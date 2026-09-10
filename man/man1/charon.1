@@ -1,0 +1,77 @@
+.TH CHARON 1 "2026" "charon" "User Commands"
+.SH NAME
+charon \- rclone remote-storage mount + bidirectional sync
+.SH DESCRIPTION
+.B charon
+ferries files between any rclone remote and the local machine: it mounts the
+remote via FUSE and keeps a fast local cache in step with it using Unison. It is
+provider-neutral \(em Google Drive, Dropbox, or any rclone backend \(em and the
+value is the MANAGEMENT (a caching mount, bidirectional sync, resumable
+seeding), not the provider. Two tools on
+.BR PATH ;
+there is no eponymous
+.B charon
+command.
+.SH TOOLS
+.TP
+.B charon-mount
+Mount the configured rclone remote via FUSE at
+.I ~/<remote>
+with "feels-like-local" VFS-cache flags, and manage its systemd
+.B --user
+unit.
+.B "charon-mount run|stop|status|install" .
+Backend-specific flags (e.g. Google Drive's
+.BR --drive-skip-gdocs )
+are applied only to the matching remote type.
+.TP
+.B charon-sync
+Keep the local cache
+.RI ( ~/.<remote> )
+in step with the mount using Unison; the mount is canonical. Sync is driven by
+per-subtree PROFILES \(em nothing is baked in.
+.B "charon-sync run|seed|seed-full|install|config|check" .
+.SH PROFILES
+Each
+.I ~/.config/charon/profiles.d/<name>.conf
+(KEY=VALUE, read literally) defines one synced subtree:
+.BR SUBTREE " (required), " LINK " (a working dir symlinked to the cache),"
+.BR INTERVAL / BOOT / JITTER " (the unison timer cadence), " SEED_PRIORITY
+(a subtree seeded synchronously at install) and
+.B SEED_FULL_ORDER
+(join the background full seed, ascending). charon ships
+.I share/charon/example.conf
+and
+.B "setup.sh bootstrap"
+copies it into an empty profiles.d to get you started.
+.SH ENVIRONMENT
+.TP
+.B CHARON_REMOTE
+the rclone remote name (default
+.BR gdrive );
+the mount
+.RI ( ~/$CHARON_REMOTE )
+and cache
+.RI ( ~/.$CHARON_REMOTE )
+derive from it.
+.TP
+.B CHARON_MOUNT ", " CHARON_CACHE
+override the derived mount / cache paths.
+.TP
+.B CHARON_RCLONE_PEER
+an SSH host to copy the rclone remote stanza from (first-machine bootstrap).
+.TP
+.B CHARON_NOTIFY
+an optional command
+.RB ( "flag <id> <msg>" " / " "clear <id>" " / " list )
+charon calls on sync faults; empty = no notify.
+.SH FILES
+.TP
+.I ~/.config/charon/profiles.d/*.conf
+the sync profiles.
+.TP
+.I ~/.unison/charon-<name>.prf
+the generated Unison profiles.
+.SH SEE ALSO
+.BR rclone (1),
+.BR unison (1)

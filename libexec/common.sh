@@ -1,0 +1,36 @@
+# charon/common.sh - shared preamble for the charon pair: charon-mount (owns the
+# rclone FUSE mount) and charon-sync (keeps a local cache in step with it).
+# Sourced early via self-location (../libexec/common.sh); set LOG_LEVEL after.
+#
+# The remote name, the mount path, and the local cache are ONE fact each, shared
+# here so a drift cannot make sync a different tree than mount mounts. All
+# overridable (env wins) -- for a test, or a second remote. The mount and cache
+# DERIVE from the remote name, so a single CHARON_REMOTE override renames all
+# three coherently (e.g. dropbox -> ~/dropbox + ~/.dropbox). charon is
+# provider-neutral (any rclone remote); the "gdrive" default is just the common
+# case, not a Google-Drive assumption.
+
+CHARON_REMOTE=${CHARON_REMOTE:-gdrive}                # rclone remote name
+CHARON_MOUNT=${CHARON_MOUNT:-$HOME/$CHARON_REMOTE}    # live FUSE mountpoint
+CHARON_CACHE=${CHARON_CACHE:-$HOME/.$CHARON_REMOTE}   # local sync cache (fast)
+CHARON_CONFIG=${CHARON_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/charon}
+
+: "${APP_NAME:=$(basename "$0")}"
+: "${LOG_LEVEL:=3}"                    # 1=ERROR 2=WARN 3=INFO 4=TRACE
+
+log_error() {
+  [ "$LOG_LEVEL" -ge 1 ] || return 0
+  echo "[ERROR] $APP_NAME: $*" >&2
+}
+log_warn() {
+  [ "$LOG_LEVEL" -ge 2 ] || return 0
+  echo "[WARN ] $APP_NAME: $*" >&2
+}
+log_info() {
+  [ "$LOG_LEVEL" -ge 3 ] || return 0
+  echo "[INFO ] $APP_NAME: $*"
+}
+log_trace() {
+  [ "$LOG_LEVEL" -ge 4 ] || return 0
+  echo "[TRACE] $APP_NAME: $*"
+}

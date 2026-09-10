@@ -1,0 +1,477 @@
+#!/bin/sh
+#
+# charon-sync: keep a local cache (~/.<remote>) in step with the live rclone
+# FUSE mount (~/<remote>) using Unison. The mount is canonical; the cache is the
+# fast, offline-usable copy that working dirs read from (FUSE reads are slow).
+#
+# PROFILES ARE CONFIG, not baked in. Each profiles.d/<name>.conf under
+# ~/.config/charon (KEY=VALUE, read literally) defines one synced subtree:
+#   SUBTREE=Media               path under the remote + cache to sync (required)
+#   LINK=~/Media                optional working dir -> the cache subtree
+#   INTERVAL=30m                unison timer cadence (OnUnitActiveSec; def 30m)
+#   BOOT=12m                    timer OnBootSec (default 10m)
+#   JITTER=5m                   timer RandomizedDelaySec (default 2m)
+#   SEED_PRIORITY=Media/Images/wallpaper  optional subtree rclone-seeded FIRST,
+#                               synchronously at install (needed now)
+#   SEED_FULL_ORDER=20          if set, this SUBTREE joins the background full
+#                               seed, in ascending order (empty = skip)
+# charon ships share/charon/example.conf and `setup.sh bootstrap` copies it into
+# an empty profiles.d; an integrator writes its own <name>.conf files.
+#
+# Usage:
+#   charon-sync                  # same as 'run' (sync all profiles)
+#   charon-sync run [profile]    # sync one profile, or all (default)
+#   charon-sync seed             # rclone-copy the priority subtrees now
+#   charon-sync seed-full        # rclone-copy the full configured tree, fast
+#   charon-sync install          # profiles, units/timers, working links, seed
+#   charon-sync config           # show where profiles + units live
+#   charon-sync check            # systemd + notify health
+
+LOG_LEVEL=2   # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE
+# logger + CHARON_REMOTE/MOUNT/CACHE/CONFIG, shared with charon-mount
+_self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+. "$(dirname "$_self")/../libexec/common.sh" 2>/dev/null || {
+  echo "charon-sync: cannot source ../libexec/common.sh" >&2; exit 1; }
+
+RCLONE_BIN="${RCLONE_BIN:-rclone}"
+UNISON_DIR="${UNISON_DIR:-$HOME/.unison}"
+SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+PROFILES_DIR="$CHARON_CONFIG/profiles.d"
+EXAMPLE_CONF="$(dirname "$_self")/../share/charon/example.conf"
+
+LOCKDIR="$HOME/.cache"
+LOCKFILE="$LOCKDIR/charon-sync.lock"
+
+# Optional fault-notify seam: a command supporting `flag <id> <msg>` / `clear
+# <id>` / `list`. Empty (default) = no notify (soft). An integrator sets it
+# (e.g. CHARON_NOTIFY=intervention-required); install bakes it into the units.
+CHARON_NOTIFY="${CHARON_NOTIFY:-}"
+
+notify() {   # <flag|clear|list> [args...]
+  [ -n "$CHARON_NOTIFY" ] || return 0
+  command -v "$CHARON_NOTIFY" >/dev/null 2>&1 || return 0
+  "$CHARON_NOTIFY" "$@" 2>/dev/null || true
+}
+
+usage() {
+  cat <<EOF
+usage:  ${APP_NAME} [mode] [profile]
+
+modes:
+  (none)        same as 'run' (sync all configured profiles)
+  run [profile] sync one profile by name, or all (default)
+  seed          rclone-copy the priority subtrees straight from the remote
+  seed-full     rclone-copy the full configured tree into the cache (fast)
+  install       install Unison profiles, systemd units/timers, links, and seed
+  config        show where profiles + units live
+  check         check systemd + notify health
+
+profiles come from ${PROFILES_DIR}/*.conf (see 'config').
+EOF
+  exit 1
+}
+
+#### profile config ####
+# Names of configured profiles (basename of each *.conf), or nothing.
+profile_names() {
+  [ -d "$PROFILES_DIR" ] || return 0
+  for _f in "$PROFILES_DIR"/*.conf; do
+    [ -f "$_f" ] || continue
+    _n=$(basename "$_f"); printf '%s\n' "${_n%.conf}"
+  done
+}
+
+# Read one KEY from a profile file, literally (nothing executed). A leading ~/
+# in the value expands to $HOME.
+profile_get() {   # <name> <KEY>
+  _pf=$PROFILES_DIR/$1.conf
+  [ -f "$_pf" ] || return 0
+  _v=$(sed -n "s/^$2=//p" "$_pf" | head -1)
+  # quote the pattern so the shell does not tilde-EXPAND ~/ (which would make it
+  # never match the literal "~/" prefix); strip it, then prepend $HOME.
+  case "$_v" in "~/"*) _v="$HOME/${_v#"~/"}" ;; esac
+  printf '%s' "$_v"
+}
+
+no_profiles_hint() {
+  log_warn "no profiles in $PROFILES_DIR"
+  log_warn "bootstrap one: cp '$EXAMPLE_CONF' '$PROFILES_DIR/<name>.conf'"
+  log_warn "(or run: setup.sh bootstrap)"
+}
+
+#### section extraction (embedded templates at end of file) ####
+extract_section() {
+  name="$1"
+  awk -v name="$name" '
+    $0=="__SECTION_BEGIN__ " name {flag=1; next}
+    $0=="__SECTION_END__ "   name {flag=0}
+    flag {print}
+  ' "$_self"
+}
+
+#### helpers ####
+check_if_mounted() {
+  if command -v mountpoint >/dev/null 2>&1; then
+    mountpoint -q "$CHARON_MOUNT"; return $?
+  fi
+  mount | grep -q "on $CHARON_MOUNT "; return $?
+}
+
+# Probe the remote API directly (NOT the FUSE mount, which stays "mounted" with
+# no network). Three states from rclone's error text, so a transient throttle is
+# never mislabelled "offline":  0 online / 3 rate-limited / 2 offline.
+check_online() {
+  out=$("$RCLONE_BIN" about "${CHARON_REMOTE}:" \
+    --contimeout 5s --timeout 15s --retries 1 --low-level-retries 1 2>&1)
+  if [ $? -eq 0 ]; then return 0; fi
+  case "$out" in
+    *rateLimitExceeded*|*userRateLimitExceeded*|*quotaExceeded*|\
+    *"Quota exceeded"*|*"Error 403"*|*"Error 429"*) return 3 ;;
+  esac
+  return 2
+}
+
+# Readiness for a sync run:  0 ready / 1 fault (flag) / 2 skip this pass.
+check_runtime_prereqs() {
+  check_online
+  case $? in
+    0) : ;;
+    3) log_warn "remote API rate-limited (HTTP 403/429 quota); skipping this"\
+                "pass -- the next timer retries"; return 2 ;;
+    *) log_info "remote API unreachable (offline); skipping this pass"
+       return 2 ;;
+  esac
+  if [ ! -d "$CHARON_CACHE" ]; then
+    log_error "local cache dir not found: $CHARON_CACHE"; return 1
+  fi
+  if ! command -v unison >/dev/null 2>&1; then
+    log_error "'unison' is not installed (run: ${APP_NAME} install)"; return 1
+  fi
+  if ! check_if_mounted; then
+    log_error "'$CHARON_MOUNT' does not appear to be mounted"; return 1
+  fi
+  return 0
+}
+
+check_install_prereqs() {
+  log_info "checking prerequisites for install"
+  sudo true || { log_error "failed to acquire sudo privileges"; exit 3; }
+}
+
+install_packages() {
+  log_info "ensuring 'unison' is installed"
+  if dpkg -l | grep -q '^ii  unison '; then
+    log_trace "'unison' already installed; skipping"; return 0
+  fi
+  sudo apt-get install -y unison
+}
+
+setup_unison_profiles() {
+  log_info "setting up Unison profiles in $UNISON_DIR"
+  mkdir -p "$UNISON_DIR"
+  for p in $(profile_names); do
+    _sub=$(profile_get "$p" SUBTREE); [ -n "$_sub" ] || continue
+    extract_section "prf:charon" \
+      | sed -e "s|@MOUNT_ROOT@|$CHARON_MOUNT/$_sub|g" \
+            -e "s|@CACHE_ROOT@|$CHARON_CACHE/$_sub|g" \
+            -e "s|@LABEL@|charon $CHARON_REMOTE:$_sub|g" \
+      >"$UNISON_DIR/charon-$p.prf"
+  done
+}
+
+link_working_dirs() {
+  log_info "pointing working dirs at the local cache"
+  mkdir -p "$CHARON_CACHE"
+  for p in $(profile_names); do
+    _link=$(profile_get "$p" LINK); [ -n "$_link" ] || continue
+    _sub=$(profile_get "$p" SUBTREE); [ -n "$_sub" ] || continue
+    _target="$CHARON_CACHE/$_sub"
+    mkdir -p "$_target"
+    if [ -e "$_link" ] && [ ! -L "$_link" ]; then mv "$_link" "$_link.bak"; fi
+    ln -sfn "$_target" "$_link"
+  done
+}
+
+setup_systemd_units() {
+  log_info "setting up systemd user units in $SYSTEMD_USER_DIR"
+  mkdir -p "$SYSTEMD_USER_DIR"
+
+  # The service template carries the resolved remote + notify seam, so the timed
+  # --user runs (no shell env) use the same config this install resolved.
+  extract_section "unit:charon-sync@.service" \
+    | sed -e "s|@CHARON_REMOTE@|$CHARON_REMOTE|g" \
+          -e "s|@CHARON_NOTIFY@|$CHARON_NOTIFY|g" \
+    >"$SYSTEMD_USER_DIR/charon-sync@.service"
+
+  for p in $(profile_names); do
+    _iv=$(profile_get "$p" INTERVAL); _bt=$(profile_get "$p" BOOT)
+    _jt=$(profile_get "$p" JITTER)
+    extract_section "timer:charon-sync.timer" \
+      | sed -e "s|@NAME@|$p|g" \
+            -e "s|@INTERVAL@|${_iv:-30m}|g" \
+            -e "s|@BOOT@|${_bt:-10m}|g" \
+            -e "s|@JITTER@|${_jt:-2m}|g" \
+      >"$SYSTEMD_USER_DIR/charon-sync-$p.timer"
+  done
+
+  log_trace "reloading systemd user daemon"
+  systemctl --user daemon-reload
+  log_trace "enabling timers"
+  for p in $(profile_names); do
+    systemctl --user enable --now "charon-sync-$p.timer" >/dev/null 2>&1
+  done
+}
+
+# Fast, resumable initial population of specific subtrees straight from the
+# remote API with rclone (parallel, idempotent, RESUMES after interruption --
+# unlike a killed unison-over-FUSE crawl, which loses all progress). Non-fatal.
+seed_subtrees() {   # <subtree>...
+  if ! command -v "$RCLONE_BIN" >/dev/null 2>&1; then
+    log_error "'$RCLONE_BIN' not found; cannot seed subtrees"; return 1
+  fi
+  rc=0
+  for sub in "$@"; do
+    [ -n "$sub" ] || continue
+    src="${CHARON_REMOTE}:${sub}"
+    dst="$CHARON_CACHE/$sub"
+    log_info "seeding $sub (rclone copy, resumable) -> $dst"
+    mkdir -p "$dst"
+    if "$RCLONE_BIN" copy "$src" "$dst" \
+         --transfers 4 --checkers 8 --fast-list \
+         --contimeout 15s --timeout 60s --retries 3 --low-level-retries 20; then
+      log_info "seeded $sub"
+    else
+      log_warn "seed of $sub incomplete (rate-limited or offline; the timers"\
+               "will finish it later)"
+      rc=1
+    fi
+  done
+  return $rc
+}
+
+# The priority subtrees (SEED_PRIORITY across profiles): seeded synchronously.
+priority_subtrees() {
+  for p in $(profile_names); do
+    _sp=$(profile_get "$p" SEED_PRIORITY); [ -n "$_sp" ] && printf '%s\n' "$_sp"
+  done
+}
+
+# The full-seed subtrees: profiles with SEED_FULL_ORDER, ascending, -> SUBTREE.
+full_subtrees() {
+  for p in $(profile_names); do
+    _o=$(profile_get "$p" SEED_FULL_ORDER); [ -n "$_o" ] || continue
+    _sub=$(profile_get "$p" SUBTREE); [ -n "$_sub" ] || continue
+    printf '%s\t%s\n' "$_o" "$_sub"
+  done | sort -n | cut -f2
+}
+
+seed_full() {
+  mkdir -p "$LOCKDIR"
+  exec 9>"$LOCKFILE"
+  if ! flock -n 9 2>/dev/null; then
+    log_info "seed-full: a sync holds the lock; skipping (timers will populate)"
+    return 0
+  fi
+  _subs=$(full_subtrees)
+  log_info "seed-full: bulk-seeding [$(echo $_subs)] from the remote API"
+  # shellcheck disable=SC2086
+  seed_subtrees $_subs
+  _rc=$?
+  flock -u 9 2>/dev/null; exec 9>&-       # release BEFORE kicking Unison
+  for p in $(profile_names); do
+    systemctl --user start --no-block "charon-sync@$p.service" || true
+  done
+  log_info "seed-full: bulk seed finished (rc $_rc); unison reconcile kicked"
+  return "$_rc"
+}
+
+run_sync_profile() {
+  PROFILE="$1"
+  UNISON_PROFILE="charon-$PROFILE"
+  SERVICE_NAME="charon-${PROFILE}-sync"
+
+  check_runtime_prereqs
+  case $? in
+    0) : ;;
+    2) log_info "skipping $UNISON_PROFILE this pass"; return 0 ;;
+    *)
+      notify flag "$SERVICE_NAME" \
+        "'$CHARON_MOUNT' mount or cache not ready; check mount + cache."
+      return 1 ;;
+  esac
+
+  log_info "running Unison profile (non-interactive): $UNISON_PROFILE"
+  # unison blocks in uninterruptible D-state on the FUSE mount, so a suspend
+  # mid-sync would fail at the freeze step and (on a lid-close logind retries)
+  # LOOP. Hold a sleep BLOCK inhibitor so a suspend DEFERS until the sync ends;
+  # a timeout caps a hung sync so it can never defer suspend indefinitely.
+  systemd-inhibit --what=sleep --who="charon-sync" \
+    --why="unison $UNISON_PROFILE syncing (unfreezable on FUSE)" --mode=block \
+    timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-600}" \
+    unison "$UNISON_PROFILE" -auto -batch -ui text -silent
+  RET=$?
+
+  if [ $RET -eq 0 ]; then
+    notify clear "$SERVICE_NAME"; return 0
+  fi
+  MSG="Unison $UNISON_PROFILE failed (exit $RET). Run it interactively and"
+  MSG="$MSG check ~/.unison/unison.log."
+  if [ -n "$CHARON_NOTIFY" ]; then notify flag "$SERVICE_NAME" "$MSG"
+  else log_error "$MSG"; fi
+  return $RET
+}
+
+run_with_lock() {
+  PROFILE="$1"   # a profile name, or "all"
+  mkdir -p "$LOCKDIR"
+  exec 9>"$LOCKFILE"
+  if ! flock -n 9 2>/dev/null; then
+    log_trace "lock held; skipping run for '$PROFILE'"; return 0
+  fi
+  if [ "$PROFILE" != all ]; then
+    run_sync_profile "$PROFILE"; return $?
+  fi
+  _rc=0
+  for p in $(profile_names); do
+    run_sync_profile "$p" || _rc=$?
+  done
+  return $_rc
+}
+
+#### higher-level operations ####
+do_config() {
+  echo "profiles dir: $PROFILES_DIR"
+  _any=
+  for p in $(profile_names); do
+    _any=1
+    echo "  profile '$p': subtree=$(profile_get "$p" SUBTREE)" \
+         "link=$(profile_get "$p" LINK)"
+    echo "    unison: $UNISON_DIR/charon-$p.prf"
+    echo "    timer:  $SYSTEMD_USER_DIR/charon-sync-$p.timer"
+  done
+  [ -n "$_any" ] || echo "  (none -- see $EXAMPLE_CONF, or setup.sh bootstrap)"
+  echo "service template: $SYSTEMD_USER_DIR/charon-sync@.service"
+}
+
+do_install() {
+  log_info "install: commencing"
+  check_install_prereqs
+  install_packages
+  if [ -z "$(profile_names)" ]; then no_profiles_hint; fi
+  setup_unison_profiles
+  link_working_dirs
+  setup_systemd_units
+
+  # Seed the priority subtrees SYNCHRONOUSLY (a fresh box needs them now, e.g. a
+  # desktop wallpaper), then bulk-seed the full configured tree in BACKGROUND
+  # (fast/parallel/resumable rclone copy, not a cold unison-over-FUSE crawl).
+  # shellcheck disable=SC2046
+  seed_subtrees $(priority_subtrees) || true
+  if command -v systemd-run >/dev/null 2>&1 \
+     && systemd-run --user --collect --unit=charon-seed-initial \
+          "$_self" seed-full >/dev/null 2>&1; then
+    log_info "install: full bulk seed launched (unit charon-seed-initial)"
+  else
+    setsid "$_self" seed-full </dev/null >/dev/null 2>&1 &
+    log_info "install: full bulk seed launched (detached)"
+  fi
+  log_info "install: complete"
+}
+
+do_check() {
+  echo "== charon-sync systemd check =="
+  if [ -f "$SYSTEMD_USER_DIR/charon-sync@.service" ]; then
+    echo "  [OK]   service template installed"
+  else
+    echo "  [FAIL] charon-sync@.service missing (run 'charon-sync install')"
+  fi
+  if systemctl --user list-unit-files 2>/dev/null \
+       | grep -q '^charon-sync@\.service'; then
+    echo "  [OK]   charon-sync@.service registered"
+  else
+    echo "  [FAIL] charon-sync@.service not registered"
+  fi
+  _any=
+  for p in $(profile_names); do
+    _any=1; t="charon-sync-$p.timer"
+    systemctl --user is-enabled "$t" >/dev/null 2>&1 \
+      && echo "  [OK]   $t enabled" || echo "  [FAIL] $t not enabled"
+    systemctl --user is-active "$t" >/dev/null 2>&1 \
+      && echo "  [OK]   $t active"  || echo "  [WARN] $t not active"
+  done
+  [ -n "$_any" ] || echo "  [WARN] no profiles configured ($PROFILES_DIR)"
+  if [ -n "$CHARON_NOTIFY" ] && command -v "$CHARON_NOTIFY" >/dev/null 2>&1
+  then
+    echo; echo "== notify ($CHARON_NOTIFY) =="; notify list
+  fi
+}
+
+#### main ####
+MODE=$1
+[ -z "$MODE" ] && MODE="run"
+case "$MODE" in
+  run)
+    PROFILE=$2
+    if [ -z "$PROFILE" ] || [ "$PROFILE" = all ]; then
+      run_with_lock all
+    elif [ -f "$PROFILES_DIR/$PROFILE.conf" ]; then
+      run_with_lock "$PROFILE"
+    else
+      log_error "unknown profile '$PROFILE'"; usage
+    fi
+    ;;
+  seed)      seed_subtrees $(priority_subtrees) ;;
+  seed-full) seed_full ;;
+  install)   do_install ;;
+  config)    do_config ;;
+  check)     do_check ;;
+  *)         usage ;;
+esac
+exit $?
+
+#### Embedded templates (read by extract_section; never executed) ####
+
+__SECTION_BEGIN__ prf:charon
+# Unison preferences -- @LABEL@
+batch = true
+label = @LABEL@
+root = @MOUNT_ROOT@
+root = @CACHE_ROOT@
+silent = true
+times = true
+copyonconflict = true
+fat = true
+# the live mount is canonical
+prefer = @MOUNT_ROOT@
+confirmbigdel = true
+fastcheck = true
+__SECTION_END__ prf:charon
+
+
+__SECTION_BEGIN__ unit:charon-sync@.service
+[Unit]
+Description=charon unison sync for profile %i
+After=charon-mount.service
+
+[Service]
+Type=oneshot
+Environment=CHARON_REMOTE=@CHARON_REMOTE@
+Environment=CHARON_NOTIFY=@CHARON_NOTIFY@
+ExecStart=%h/.local/bin/charon-sync run %i
+__SECTION_END__ unit:charon-sync@.service
+
+
+__SECTION_BEGIN__ timer:charon-sync.timer
+[Unit]
+Description=charon sync for the @NAME@ subtree
+
+[Timer]
+OnBootSec=@BOOT@
+OnUnitActiveSec=@INTERVAL@
+Unit=charon-sync@@NAME@.service
+Persistent=false
+RandomizedDelaySec=@JITTER@
+
+[Install]
+WantedBy=timers.target
+__SECTION_END__ timer:charon-sync.timer

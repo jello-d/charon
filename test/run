@@ -1,0 +1,33 @@
+#!/bin/sh
+# test/run - run every charon shell test (test/*.t) and report. Non-zero if any
+# fails. POSIX sh, no dependency beyond a shell + the repo checkout.
+#
+# SKIPS ARE COUNTED AND PRINTED: a test that cannot run here (a missing tool it
+# stubs, say) prints `skip ...` as its last line and is counted, so a green run
+# never silently omits coverage.
+set -eu
+_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+_rc=0
+_pass=0
+_skip=0
+for _t in "$_dir"/*.t; do
+  [ -f "$_t" ] || continue
+  _out=$(sh "$_t" 2>&1) || _rc=1
+  printf '%s\n' "$_out"
+  case "$(printf '%s\n' "$_out" | tail -n 1)" in
+    skip\ *) _skip=$((_skip + 1)) ;;
+    ok\ *)   _pass=$((_pass + 1)) ;;
+  esac
+done
+
+if [ "$_rc" -ne 0 ]; then
+  echo "charon tests FAILED"
+  exit 1
+fi
+if [ "$_skip" -gt 0 ]; then
+  printf 'all charon tests passed (%d ok, %d skipped)\n' "$_pass" "$_skip"
+else
+  printf 'all charon tests passed (%d)\n' "$_pass"
+fi
+exit 0

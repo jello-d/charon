@@ -1,0 +1,279 @@
+#!/bin/sh
+#
+# charon-mount: mount an rclone remote via FUSE and manage its systemd user unit
+#
+
+LOG_LEVEL=3    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE
+# logger + CHARON_REMOTE + CHARON_MOUNT, shared with charon-sync (self-located)
+_self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+. "$(dirname "$_self")/../libexec/common.sh" 2>/dev/null || {
+  echo "charon-mount: cannot source ../libexec/common.sh" >&2; exit 1; }
+
+RCLONE_BIN="${RCLONE_BIN:-rclone}"
+REMOTE_NAME="${REMOTE_NAME:-$CHARON_REMOTE}"
+MOUNTPOINT="${MOUNTPOINT:-$CHARON_MOUNT}"
+SYSTEMD_UNIT="charon-mount"
+
+usage() {
+  cat <<EOF
+usage: $APP_NAME [run|stop|status|install]
+
+  run       Mount the rclone remote (${REMOTE_NAME}:) at ${MOUNTPOINT}
+  stop      Unmount ${MOUNTPOINT}
+  status    Show whether ${MOUNTPOINT} is mounted
+  install   Install and enable the systemd --user unit for charon-mount
+EOF
+}
+
+check_prereqs() {
+  if ! command -v "$RCLONE_BIN" >/dev/null 2>&1; then
+    log_error "rclone not found in PATH; please install rclone first."
+    exit 1
+  fi
+
+  if [ ! -d "$MOUNTPOINT" ]; then
+    log_info "creating mountpoint directory: $MOUNTPOINT"
+    mkdir -p "$MOUNTPOINT" || {
+      log_error "failed to create mountpoint: $MOUNTPOINT"
+      exit 1
+    }
+  fi
+}
+
+check_if_mounted() {
+  if mountpoint -q "$MOUNTPOINT" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+# The rclone backend type of the configured remote ('drive', 'dropbox', ...),
+# or empty if unreadable. Used to apply backend-specific mount flags only where
+# they belong.
+remote_type() {
+  "$RCLONE_BIN" config show "$REMOTE_NAME" 2>/dev/null \
+    | sed -n 's/^[[:space:]]*type[[:space:]]*=[[:space:]]*//p' | head -1
+}
+
+# Ensure rclone is installed and the '<REMOTE_NAME>:' remote exists.
+#
+# Many rclone backends (Google Drive, Dropbox, ...) auth over OAuth: the refresh
+# token can't be synthesized from prompted values -- it only comes from a real
+# browser authorization. But the token is portable and already lives on any
+# machine set up before this one, so after the first machine we just pull the
+# remote stanza from a configured peer over SSH (rclone.conf is a per-machine
+# secret kept out of git anyway). The first machine falls back to the one-time
+# interactive `rclone config`. Upstream .deb: distro rclone is often too old for
+# a current OAuth flow (e.g. Ubuntu 26.04 ships 1.60.1 (2022), which predates
+# Google's 2025-03-31 Photos-scope retirement and cannot complete that flow).
+RCLONE_DEB_URL=https://downloads.rclone.org/rclone-current-linux-amd64.deb
+
+ensure_rclone() {
+  command -v "$RCLONE_BIN" >/dev/null 2>&1 || {
+    log_info "installing rclone from upstream"
+    _rd=$(mktemp --suffix=.deb) || exit 1
+    if ! curl -fsSL "$RCLONE_DEB_URL" -o "$_rd" \
+       || ! sudo apt-get install -y "$_rd"; then
+      rm -f "$_rd"
+      log_error "rclone install failed"
+      exit 1
+    fi
+    rm -f "$_rd"
+  }
+
+  RCLONE_CONF="${RCLONE_CONFIG:-$HOME/.config/rclone/rclone.conf}"
+
+  # already configured -> nothing to do
+  if "$RCLONE_BIN" listremotes 2>/dev/null | grep -qx "${REMOTE_NAME}:"; then
+    return 0
+  fi
+
+  # seamless path: copy the stanza from a peer that already has it
+  peer="${CHARON_RCLONE_PEER:-}"
+  if [ -z "$peer" ] && [ -t 0 ]; then
+    printf "rclone remote '%s:' not found.\n" "$REMOTE_NAME"
+    printf "  peer host to copy it from (blank = configure here): "
+    read -r peer
+  fi
+
+  if [ -n "$peer" ]; then
+    log_info "pulling '${REMOTE_NAME}:' from $peer"
+    mkdir -p "$(dirname "$RCLONE_CONF")"
+    if ssh "$peer" "rclone config show ${REMOTE_NAME}" >>"$RCLONE_CONF" \
+       && "$RCLONE_BIN" listremotes 2>/dev/null | grep -qx "${REMOTE_NAME}:"
+    then
+      log_info "remote '${REMOTE_NAME}:' provisioned from $peer"
+      return 0
+    fi
+    log_error "could not provision '${REMOTE_NAME}:' from $peer"
+  fi
+
+  # first machine, or peer pull failed: one-time interactive auth
+  if [ -t 0 ]; then
+    log_info "run 'rclone config': make a remote named '${REMOTE_NAME}'"
+    "$RCLONE_BIN" config
+    "$RCLONE_BIN" listremotes 2>/dev/null | grep -qx "${REMOTE_NAME}:" \
+      && return 0
+  fi
+
+  log_error "remote '${REMOTE_NAME}:' not configured."
+  log_error "set CHARON_RCLONE_PEER=<host>, or run: rclone config"
+  exit 1
+}
+
+do_status() {
+  if check_if_mounted; then
+    echo "$MOUNTPOINT is mounted (remote: ${REMOTE_NAME}:)"
+    return 0
+  else
+    echo "$MOUNTPOINT is not mounted"
+    return 1
+  fi
+}
+
+do_mount() {
+  check_prereqs
+
+  if check_if_mounted; then
+    log_info "mountpoint already mounted: $MOUNTPOINT"
+    return 0
+  fi
+
+  # Core rclone mount flags for "feels like NFS" semantics.
+  set -- mount "${REMOTE_NAME}:" "$MOUNTPOINT" \
+    --vfs-cache-mode full \
+    --vfs-cache-max-size 4G \
+    --vfs-cache-max-age 12h \
+    --dir-cache-time 1h \
+    --poll-interval 30s \
+    --buffer-size 64M \
+    --transfers 8 \
+    --checkers 8 \
+    --fast-list
+
+  # --drive-skip-gdocs is Google-Drive-SPECIFIC and load-bearing for the sync,
+  # NOT a preference: Drive reports NO byte size for a native gdoc, so
+  # rclone can only present one as a 0-byte file. Unison then syncs that stub,
+  # sees it diverge from the real local export, and (copyonconflict) lays down a
+  # "(conflict_on_DATE)" twin -- 535 junk files in one pass on 2026-06-16.
+  # Hiding gdocs removes the stub. Only Drive has this pathology, so gate the
+  # flag on the backend type -- other remotes must not get it.
+  if [ "$(remote_type)" = drive ]; then
+    set -- "$@" --drive-skip-gdocs
+  fi
+
+  log_trace "exec $RCLONE_BIN $*"
+  # NOTE: exec replaces this shell with rclone; systemd tracks rclone directly
+  exec "$RCLONE_BIN" "$@"
+}
+
+do_unmount() {
+  if ! check_if_mounted; then
+    log_info "mountpoint not mounted: $MOUNTPOINT"
+    return 0
+  fi
+
+  # Prefer fusermount3 if available; fall back to fusermount
+  if command -v fusermount3 >/dev/null 2>&1; then
+    UMOUNT_BIN=fusermount3
+  else
+    UMOUNT_BIN=fusermount
+  fi
+
+  log_info "unmounting $MOUNTPOINT"
+  "$UMOUNT_BIN" -u "$MOUNTPOINT" 2>/dev/null || {
+    log_error "failed to unmount $MOUNTPOINT"
+    return 1
+  }
+
+  if check_if_mounted; then
+    log_error "unmount appears to have failed, still mounted: $MOUNTPOINT"
+    return 1
+  fi
+
+  log_trace "unmount successful: $MOUNTPOINT"
+  return 0
+}
+
+extract_block() {
+  START_MARK="$1"
+  END_MARK="$2"
+  OUTFILE="$3"
+
+  awk "/^${START_MARK}\$/ {flag=1; next} /^${END_MARK}\$/ {flag=0} flag" \
+    "$_self" >"$OUTFILE"
+}
+
+do_install() {
+  # No blanket tty guard: install is non-interactive when the rclone remote is
+  # already configured (restored, or pulled from a peer), the common case. The
+  # ONE interactive step, a first-machine `rclone config`, is gated on stdin
+  # inside ensure_rclone, which fails loud with guidance when needed but no
+  # terminal is present.
+  sudo true || { log_error "failed to acquire sudo"; exit 3; }
+  ensure_rclone
+
+  SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  mkdir -p "$SYSTEMD_DIR"
+
+  UNIT_PATH="$SYSTEMD_DIR/${SYSTEMD_UNIT}.service"
+
+  # Bake the resolved remote + mountpoint into the unit's Environment, so the
+  # --user unit (which runs with no shell env) uses the same remote this install
+  # resolved -- a non-default CHARON_REMOTE then "just works" with no injection.
+  extract_block "#-----BEGIN-SYSTEMD-UNIT-CHARON-MOUNT-----" \
+                "#-----END-SYSTEMD-UNIT-CHARON-MOUNT-----" \
+                "$UNIT_PATH"
+  sed -i \
+    -e "s|@CHARON_REMOTE@|$REMOTE_NAME|g" \
+    -e "s|@CHARON_MOUNT@|$MOUNTPOINT|g" \
+    "$UNIT_PATH"
+
+  log_info "installed systemd unit: $UNIT_PATH"
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now "${SYSTEMD_UNIT}.service" || {
+    log_error "failed to enable/start ${SYSTEMD_UNIT}.service"
+    exit 1
+  }
+
+  log_info "systemd user service ${SYSTEMD_UNIT}.service enabled and started"
+}
+
+# ---- main dispatch ----
+
+case "$1" in
+  run)     shift; do_mount "$@" ;;
+  stop)    do_unmount ;;
+  status)  do_status ;;
+  install) do_install ;;
+  ""|help|-h|--help) usage ;;
+  *)
+    log_error "unknown command: $1"
+    usage
+    exit 1
+    ;;
+esac
+
+exit 0
+
+#-----BEGIN-SYSTEMD-UNIT-CHARON-MOUNT-----
+[Unit]
+Description=charon rclone FUSE mount for @CHARON_REMOTE@
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CHARON_REMOTE=@CHARON_REMOTE@
+Environment=CHARON_MOUNT=@CHARON_MOUNT@
+Environment=RCLONE_CONFIG=%h/.config/rclone/rclone.conf
+ExecStart=%h/.local/bin/charon-mount run
+ExecStop=%h/.local/bin/charon-mount stop
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+Alias=charon-mount.service
+#-----END-SYSTEMD-UNIT-CHARON-MOUNT-----
