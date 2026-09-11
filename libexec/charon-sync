@@ -27,7 +27,10 @@
 #   charon sync config           # show where profiles + units live
 #   charon sync check            # systemd + notify health
 
-LOG_LEVEL=2   # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE
+# Default WARN. Assigned with := so the ENVIRONMENT still wins: it used to be a
+# bare assignment, which silently discarded LOG_LEVEL=4 from a caller and made
+# live debugging far harder than it needed to be.
+: "${LOG_LEVEL:=2}"   # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE
 # logger + CHARON_REMOTE/MOUNT/CACHE/CONFIG, shared with charon-mount (a sibling
 # in libexec). Reached via the `charon` dispatcher, or run directly.
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
@@ -42,6 +45,18 @@ EXAMPLE_CONF="$(dirname "$_self")/../share/charon/example.conf"
 
 LOCKDIR="$HOME/.cache"
 LOCKFILE="$LOCKDIR/charon-sync.lock"
+
+# A SKIPPED pass is neither a success nor a fault, and conflating it with
+# success cost real time: a detached archive rebuild reported `documents EXIT=0`
+# and `media EXIT=0` in the SAME SECOND it started, which reads as "rebuilt" and
+# actually meant "did nothing" -- only the absence of archive files gave it
+# away. So a skip now carries its OWN exit status. 75 is EX_TEMPFAIL: try again
+# later, which is exactly what a timer does. The generated unit marks 75 a
+# success for systemd (SuccessExitStatus), because an offline laptop must not
+# look broken, while `charon sync check` reads ExecMainStatus and reports it as
+# SKIPPED rather than OK. A human or script running the verb directly sees 75
+# and cannot mistake it for work done.
+EX_SKIP=75
 
 # Optional fault-notify seam: a command supporting `flag <id> <msg>` / `clear
 # <id>` / `list`. Empty (default) = no notify (soft). An integrator sets it
@@ -148,7 +163,9 @@ check_runtime_prereqs() {
     0) : ;;
     3) log_warn "remote API rate-limited (HTTP 403/429 quota); skipping this"\
                 "pass -- the next timer retries"; return 2 ;;
-    *) log_info "remote API unreachable (offline); skipping this pass"
+    # WARN, not INFO: charon-sync runs at LOG_LEVEL 2, so an INFO reason was
+    # discarded and the skip became unexplainable after the fact.
+    *) log_warn "remote API unreachable (offline); skipping this pass"
        return 2 ;;
   esac
   if [ ! -d "$CHARON_CACHE" ]; then
@@ -323,7 +340,8 @@ run_sync_profile() {
   check_runtime_prereqs
   case $? in
     0) : ;;
-    2) log_info "skipping $UNISON_PROFILE this pass"; return 0 ;;
+    2) log_warn "SKIPPED $UNISON_PROFILE: no work done this pass"
+       return "$EX_SKIP" ;;
     *)
       notify flag "$SERVICE_NAME" \
         "'$CHARON_MOUNT' mount or cache not ready; check mount + cache."
@@ -385,14 +403,23 @@ run_with_lock() {
   mkdir -p "$LOCKDIR"
   exec 9>"$LOCKFILE"
   if ! flock -n 9 2>/dev/null; then
-    log_trace "lock held; skipping run for '$PROFILE'"; return 0
+    log_warn "SKIPPED '$PROFILE': another charon sync holds the lock"
+    return "$EX_SKIP"
   fi
   if [ "$PROFILE" != all ]; then
     run_sync_profile "$PROFILE"; return $?
   fi
+  # Aggregate across profiles by SEVERITY, not by recency: a fault outranks a
+  # skip and a skip outranks success, so `run all` reports the worst thing that
+  # happened rather than whatever the last profile did.
   _rc=0
   for p in $(profile_names); do
-    run_sync_profile "$p" || _rc=$?
+    run_sync_profile "$p"; _pr=$?
+    case "$_pr" in
+      0) : ;;
+      "$EX_SKIP") [ "$_rc" -eq 0 ] && _rc=$EX_SKIP || : ;;
+      *) _rc=$_pr ;;
+    esac
   done
   return $_rc
 }
@@ -469,8 +496,14 @@ do_check() {
     _res=$(systemctl --user show "$_u" -p Result --value 2>/dev/null)
     _ts=$(systemctl --user show "$_u" -p ExecMainStartTimestamp --value \
             2>/dev/null)
+    _st=$(systemctl --user show "$_u" -p ExecMainStatus --value 2>/dev/null)
     if [ -z "$_ts" ]; then
       echo "  [WARN] $_u has not run yet"
+    elif [ "$_res" = success ] && [ "$_st" = "$EX_SKIP" ]; then
+      # systemd calls 75 a success (SuccessExitStatus); charon must not. A pass
+      # that did nothing is not a pass that worked.
+      echo "  [WARN] $_u last run: SKIPPED, no work done (offline,"\
+           "rate-limited, or lock held) at $_ts"
     elif [ "$_res" = success ]; then
       echo "  [OK]   $_u last run: success"
     else
@@ -574,6 +607,11 @@ After=charon-mount.service
 Type=oneshot
 Environment=CHARON_REMOTE=@CHARON_REMOTE@
 Environment=CHARON_NOTIFY=@CHARON_NOTIFY@
+# 75 is charon's SKIPPED (EX_TEMPFAIL): the remote was offline, rate-limited,
+# or another pass held the lock, so this pass did no work and the next timer
+# retries. Not a failure, so an offline laptop does not accumulate failed
+# units; not a success either, which is why check reads ExecMainStatus.
+SuccessExitStatus=75
 ExecStart=%h/.local/bin/charon sync run %i
 __SECTION_END__ unit:charon-sync@.service
 

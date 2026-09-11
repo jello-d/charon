@@ -3,7 +3,7 @@
 # charon-mount: mount an rclone remote via FUSE and manage its systemd user unit
 #
 
-LOG_LEVEL=3    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE
+: "${LOG_LEVEL:=3}"    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE (environment wins)
 # logger + CHARON_REMOTE + CHARON_MOUNT, shared with charon-sync (sibling in
 # libexec). Reached via the `charon` dispatcher, or run directly.
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")

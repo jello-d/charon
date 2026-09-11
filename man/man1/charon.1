@@ -60,6 +60,31 @@ an SSH host to copy the rclone remote stanza from (first-machine bootstrap).
 an optional command
 .RB ( "flag <id> <msg>" " / " "clear <id>" " / " list )
 charon calls on sync faults; empty = no notify.
+.SH EXIT STATUS
+.B charon sync run
+distinguishes a pass that did WORK from one that did NOTHING, because the two
+are otherwise indistinguishable to a caller and to a log reader.
+.TP
+.B 0
+the pass ran and succeeded.
+.TP
+.B 75
+.RB ( EX_TEMPFAIL )
+SKIPPED: no work was done, because the remote was offline or rate-limited, or
+another pass held the lock. The next timer retries. The generated systemd unit
+lists this under
+.B SuccessExitStatus
+so an offline machine does not accumulate failed units for an expected
+condition, while
+.B charon sync check
+reads the unit's
+.B ExecMainStatus
+and reports it as SKIPPED rather than OK.
+.TP
+.B other
+a fault. The reason is always logged, and additionally sent to
+.B CHARON_NOTIFY
+when one is configured.
 .SH FILES
 .TP
 .I ~/.config/charon/profiles.d/*.conf
