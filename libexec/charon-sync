@@ -50,7 +50,16 @@ CHARON_NOTIFY="${CHARON_NOTIFY:-}"
 
 notify() {   # <flag|clear|list> [args...]
   [ -n "$CHARON_NOTIFY" ] || return 0
-  command -v "$CHARON_NOTIFY" >/dev/null 2>&1 || return 0
+  if ! command -v "$CHARON_NOTIFY" >/dev/null 2>&1; then
+    # CONFIGURED BUT ABSENT is drift, not "no notify". Treating it as a silent
+    # no-op is how a fault reaches nobody at all: manifestor had
+    # CHARON_NOTIFY=intervention-required baked into its units with the command
+    # nowhere on the unit PATH, so every sync failure vanished. Say it once.
+    [ -n "${_notify_warned:-}" ] || log_warn "CHARON_NOTIFY='$CHARON_NOTIFY'" \
+      "is not on PATH; sync faults will NOT raise a flag"
+    _notify_warned=1
+    return 0
+  fi
   "$CHARON_NOTIFY" "$@" 2>/dev/null || true
 }
 
@@ -313,19 +322,41 @@ run_sync_profile() {
   # what that then cost). The inhibitor, not the timeout, is what protects
   # suspend; the timeout only has to bound a genuinely WEDGED run, so it is set
   # far above any healthy pass.
-  systemd-inhibit --what=sleep --who="charon-sync" \
-    --why="unison $UNISON_PROFILE syncing (unfreezable on FUSE)" --mode=block \
-    timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-3600}" \
+  # The inhibitor is a SAFETY NICETY, never a prerequisite. Acquiring a BLOCK
+  # inhibitor needs polkit authorization that a --user manager session does not
+  # always get: on a session with no seat, polkit answers "Access denied ...
+  # requires interactive authentication" and systemd-inhibit exits 1. Because
+  # the whole pass used to hang off that one command, a denial did not degrade
+  # the sync, it CANCELLED it -- manifestor failed 5 of 6 timed documents runs
+  # this way while manifold (whose session has a seat) was unaffected. Not
+  # syncing is far worse than syncing unprotected, so a denial now WARNS and
+  # proceeds. Probe with a throwaway inhibit so a real failure is unison's.
+  _inh="systemd-inhibit --what=sleep --who=charon-sync --mode=block"
+  set -- timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-3600}" \
     unison "$UNISON_PROFILE" -auto -batch -ui text -silent
-  RET=$?
+  if $_inh --why="charon-sync probe" true 2>/dev/null; then
+    $_inh --why="unison $UNISON_PROFILE syncing (unfreezable on FUSE)" "$@"
+    RET=$?
+  else
+    log_warn "cannot hold the sleep inhibitor (polkit denied, or"\
+             "systemd-inhibit absent); syncing UNPROTECTED -- a suspend"\
+             "mid-pass may wedge on the FUSE mount"
+    "$@"
+    RET=$?
+  fi
 
   if [ $RET -eq 0 ]; then
     notify clear "$SERVICE_NAME"; return 0
   fi
   MSG="Unison $UNISON_PROFILE failed (exit $RET). Run it interactively and"
   MSG="$MSG check ~/.unison/unison.log."
-  if [ -n "$CHARON_NOTIFY" ]; then notify flag "$SERVICE_NAME" "$MSG"
-  else log_error "$MSG"; fi
+  # ALWAYS log, THEN also notify. The old form logged only when NO notifier was
+  # configured, which made a set-but-missing notifier swallow the fault whole:
+  # notify() no-ops on an absent command and nothing else printed, so the
+  # journal recorded a bare "exit 1" with no reason. A fault is loud now
+  # regardless of whether anyone is listening on the notify seam.
+  log_error "$MSG"
+  notify flag "$SERVICE_NAME" "$MSG"
   return $RET
 }
 
@@ -388,30 +419,57 @@ do_install() {
 
 do_check() {
   echo "== charon-sync systemd check =="
+  _rc=0
   if [ -f "$SYSTEMD_USER_DIR/charon-sync@.service" ]; then
     echo "  [OK]   service template installed"
   else
     echo "  [FAIL] charon-sync@.service missing (run 'charon sync install')"
+    _rc=1
   fi
   if systemctl --user list-unit-files 2>/dev/null \
        | grep -q '^charon-sync@\.service'; then
     echo "  [OK]   charon-sync@.service registered"
   else
-    echo "  [FAIL] charon-sync@.service not registered"
+    echo "  [FAIL] charon-sync@.service not registered"; _rc=1
   fi
   _any=
   for p in $(profile_names); do
     _any=1; t="charon-sync-$p.timer"
-    systemctl --user is-enabled "$t" >/dev/null 2>&1 \
-      && echo "  [OK]   $t enabled" || echo "  [FAIL] $t not enabled"
-    systemctl --user is-active "$t" >/dev/null 2>&1 \
-      && echo "  [OK]   $t active"  || echo "  [WARN] $t not active"
+    if systemctl --user is-enabled "$t" >/dev/null 2>&1; then
+      echo "  [OK]   $t enabled"
+    else echo "  [FAIL] $t not enabled"; _rc=1; fi
+    if systemctl --user is-active "$t" >/dev/null 2>&1; then
+      echo "  [OK]   $t active"
+    else echo "  [WARN] $t not active"; fi
+    # PRESENCE IS NOT FUNCTION. An enabled, active timer whose service fails
+    # every single pass looks perfectly healthy to a presence check, which is
+    # how manifestor sat at 5-of-6 failed runs behind an all-[OK] audit for
+    # hours. Report the real outcome of the last run, and FAIL on it.
+    _u="charon-sync@$p.service"
+    _res=$(systemctl --user show "$_u" -p Result --value 2>/dev/null)
+    _ts=$(systemctl --user show "$_u" -p ExecMainStartTimestamp --value \
+            2>/dev/null)
+    if [ -z "$_ts" ]; then
+      echo "  [WARN] $_u has not run yet"
+    elif [ "$_res" = success ]; then
+      echo "  [OK]   $_u last run: success"
+    else
+      echo "  [FAIL] $_u last run: $_res ($_ts)"; _rc=1
+    fi
   done
   [ -n "$_any" ] || echo "  [WARN] no profiles configured ($PROFILES_DIR)"
-  if [ -n "$CHARON_NOTIFY" ] && command -v "$CHARON_NOTIFY" >/dev/null 2>&1
-  then
-    echo; echo "== notify ($CHARON_NOTIFY) =="; notify list
+  if [ -n "$CHARON_NOTIFY" ]; then
+    if command -v "$CHARON_NOTIFY" >/dev/null 2>&1; then
+      echo; echo "== notify ($CHARON_NOTIFY) =="; notify list
+    else
+      # Configured but absent: the seam is wired to nothing, so every fault is
+      # silent. That is drift, and drift is what a check exists to catch.
+      echo "  [FAIL] CHARON_NOTIFY='$CHARON_NOTIFY' is not on PATH;"\
+           "sync faults raise no flag"
+      _rc=1
+    fi
   fi
+  return $_rc
 }
 
 #### main ####
