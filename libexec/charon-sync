@@ -306,9 +306,16 @@ run_sync_profile() {
   # mid-sync would fail at the freeze step and (on a lid-close logind retries)
   # LOOP. Hold a sleep BLOCK inhibitor so a suspend DEFERS until the sync ends;
   # a timeout caps a hung sync so it can never defer suspend indefinitely.
+  #
+  # The cap is a BACKSTOP, not a pacer. At the old 600s it was neither: a cold
+  # or large pass over FUSE routinely outran it, and every kill stranded a
+  # partial transfer temp in the destination (see the ignore in prf:charon for
+  # what that then cost). The inhibitor, not the timeout, is what protects
+  # suspend; the timeout only has to bound a genuinely WEDGED run, so it is set
+  # far above any healthy pass.
   systemd-inhibit --what=sleep --who="charon-sync" \
     --why="unison $UNISON_PROFILE syncing (unfreezable on FUSE)" --mode=block \
-    timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-600}" \
+    timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-3600}" \
     unison "$UNISON_PROFILE" -auto -batch -ui text -silent
   RET=$?
 
@@ -442,6 +449,14 @@ silent = true
 times = true
 copyonconflict = true
 fat = true
+# Unison's own transfer temps are NEVER content. A run killed mid-transfer
+# strands one in the destination dir; with no ignore, the NEXT pass sees it as
+# an ordinary new file and REPLICATES it to the other side -- so a crumb on the
+# cache becomes a crumb on the remote, permanently. Found 2026-09-11: 544 such
+# files, an IDENTICAL set on both sides (the proof they were synced, not
+# independently stranded), 54 MB each way. Ignoring them makes the sync blind to
+# its own litter; sweeping it is an out-of-band job.
+ignore = Name .unison.*.unison.tmp
 # the live mount is canonical
 prefer = @MOUNT_ROOT@
 confirmbigdel = true
