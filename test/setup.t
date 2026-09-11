@@ -25,8 +25,8 @@ done
 # check reports the tools (put the sandbox bin FIRST so command -v resolves it)
 PATH="$XDG_BIN_HOME:$PATH" sh "$HERE/setup.sh" check >"$T/check.out" 2>&1 \
   || true
-grep -q '\[OK\].*charon-mount present' "$T/check.out" \
-  || fail "check did not report the linked tools"
+grep -q '\[OK\].*charon present' "$T/check.out" \
+  || fail "check did not report the linked command"
 
 # bootstrap seeds the example into an empty profiles.d, and is a no-op once full
 sh "$HERE/setup.sh" bootstrap >/dev/null || fail "bootstrap errored"

@@ -34,8 +34,8 @@ JITTER=1m
 SEED_FULL_ORDER=5
 EOF
 
-PATH="$T/bin:$PATH" sh "$HERE/bin/charon-sync" install >/dev/null 2>&1 \
-  || fail "charon-sync install errored"
+PATH="$T/bin:$PATH" sh "$HERE/bin/charon" sync install >/dev/null 2>&1 \
+  || fail "charon sync install errored"
 
 # 1) the unison profile: roots derived from CHARON_REMOTE + SUBTREE
 prf=$T/.unison/charon-docs.prf
@@ -67,7 +67,7 @@ grep -q '^Environment=CHARON_NOTIFY=my-notifier$' "$svc" \
 
 # 5) NO profile == no generation (a bare config dir is inert, not an error)
 rm -f "$XDG_CONFIG_HOME/charon/profiles.d/docs.conf"
-PATH="$T/bin:$PATH" sh "$HERE/bin/charon-sync" config >"$T/cfg.out" 2>&1 \
+PATH="$T/bin:$PATH" sh "$HERE/bin/charon" sync config >"$T/cfg.out" 2>&1 \
   || fail "config errored with no profiles"
 grep -qi 'none' "$T/cfg.out" || fail "config did not note the empty profile set"
 

@@ -4,10 +4,11 @@
 #
 
 LOG_LEVEL=3    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE
-# logger + CHARON_REMOTE + CHARON_MOUNT, shared with charon-sync (self-located)
+# logger + CHARON_REMOTE + CHARON_MOUNT, shared with charon-sync (sibling in
+# libexec). Reached via the `charon` dispatcher, or run directly.
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-. "$(dirname "$_self")/../libexec/common.sh" 2>/dev/null || {
-  echo "charon-mount: cannot source ../libexec/common.sh" >&2; exit 1; }
+. "$(dirname "$_self")/common.sh" 2>/dev/null || {
+  echo "charon-mount: cannot source common.sh" >&2; exit 1; }
 
 RCLONE_BIN="${RCLONE_BIN:-rclone}"
 REMOTE_NAME="${REMOTE_NAME:-$CHARON_REMOTE}"
@@ -21,7 +22,7 @@ usage: $APP_NAME [run|stop|status|install]
   run       Mount the rclone remote (${REMOTE_NAME}:) at ${MOUNTPOINT}
   stop      Unmount ${MOUNTPOINT}
   status    Show whether ${MOUNTPOINT} is mounted
-  install   Install and enable the systemd --user unit for charon-mount
+  install   Install and enable the systemd --user unit for the mount
 EOF
 }
 
@@ -268,8 +269,8 @@ Type=simple
 Environment=CHARON_REMOTE=@CHARON_REMOTE@
 Environment=CHARON_MOUNT=@CHARON_MOUNT@
 Environment=RCLONE_CONFIG=%h/.config/rclone/rclone.conf
-ExecStart=%h/.local/bin/charon-mount run
-ExecStop=%h/.local/bin/charon-mount stop
+ExecStart=%h/.local/bin/charon mount run
+ExecStop=%h/.local/bin/charon mount stop
 Restart=on-failure
 RestartSec=10
 

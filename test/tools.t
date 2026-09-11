@@ -14,7 +14,7 @@ _checker() {   # <file> -> the -n syntax check for its shebang
 }
 
 _n=0
-for _f in "$HERE"/bin/* "$HERE"/setup.sh "$HERE"/test/run; do
+for _f in "$HERE"/bin/* "$HERE"/libexec/* "$HERE"/setup.sh "$HERE"/test/run; do
   [ -f "$_f" ] || continue
   _checker "$_f" || fail "parse error in $(basename "$_f")"
   _n=$((_n + 1))

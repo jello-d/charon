@@ -18,20 +18,21 @@
 # charon ships share/charon/example.conf and `setup.sh bootstrap` copies it into
 # an empty profiles.d; an integrator writes its own <name>.conf files.
 #
-# Usage:
-#   charon-sync                  # same as 'run' (sync all profiles)
-#   charon-sync run [profile]    # sync one profile, or all (default)
-#   charon-sync seed             # rclone-copy the priority subtrees now
-#   charon-sync seed-full        # rclone-copy the full configured tree, fast
-#   charon-sync install          # profiles, units/timers, working links, seed
-#   charon-sync config           # show where profiles + units live
-#   charon-sync check            # systemd + notify health
+# Usage (via the `charon` front, or run this impl directly):
+#   charon sync                  # same as 'run' (sync all profiles)
+#   charon sync run [profile]    # sync one profile, or all (default)
+#   charon sync seed             # rclone-copy the priority subtrees now
+#   charon sync seed-full        # rclone-copy the full configured tree, fast
+#   charon sync install          # profiles, units/timers, working links, seed
+#   charon sync config           # show where profiles + units live
+#   charon sync check            # systemd + notify health
 
 LOG_LEVEL=2   # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE
-# logger + CHARON_REMOTE/MOUNT/CACHE/CONFIG, shared with charon-mount
+# logger + CHARON_REMOTE/MOUNT/CACHE/CONFIG, shared with charon-mount (a sibling
+# in libexec). Reached via the `charon` dispatcher, or run directly.
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-. "$(dirname "$_self")/../libexec/common.sh" 2>/dev/null || {
-  echo "charon-sync: cannot source ../libexec/common.sh" >&2; exit 1; }
+. "$(dirname "$_self")/common.sh" 2>/dev/null || {
+  echo "charon-sync: cannot source common.sh" >&2; exit 1; }
 
 RCLONE_BIN="${RCLONE_BIN:-rclone}"
 UNISON_DIR="${UNISON_DIR:-$HOME/.unison}"
@@ -383,7 +384,7 @@ do_check() {
   if [ -f "$SYSTEMD_USER_DIR/charon-sync@.service" ]; then
     echo "  [OK]   service template installed"
   else
-    echo "  [FAIL] charon-sync@.service missing (run 'charon-sync install')"
+    echo "  [FAIL] charon-sync@.service missing (run 'charon sync install')"
   fi
   if systemctl --user list-unit-files 2>/dev/null \
        | grep -q '^charon-sync@\.service'; then
@@ -457,7 +458,7 @@ After=charon-mount.service
 Type=oneshot
 Environment=CHARON_REMOTE=@CHARON_REMOTE@
 Environment=CHARON_NOTIFY=@CHARON_NOTIFY@
-ExecStart=%h/.local/bin/charon-sync run %i
+ExecStart=%h/.local/bin/charon sync run %i
 __SECTION_END__ unit:charon-sync@.service
 
 

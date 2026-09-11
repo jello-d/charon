@@ -6,16 +6,17 @@ it mounts the remote via FUSE and keeps a fast local cache in step with it using
 Unison. The value is the *management* — a caching mount, bidirectional sync,
 resumable seeding — not the provider.
 
-Two tools on `PATH`; there is no eponymous `charon` command.
+One command, `charon`, with two subcommands.
 
-## Tools
+## Subcommands
 
-- **charon-mount** — mount the rclone remote via FUSE at `~/<remote>` with
-  feels-like-local VFS-cache flags, and manage its systemd `--user` unit.
-  Backend-specific flags (e.g. Drive's `--drive-skip-gdocs`) apply only to the
-  matching remote type.
-- **charon-sync** — keep the local cache (`~/.<remote>`) in step with the mount
-  using Unison (the mount is canonical), driven by per-subtree **profiles**.
+- **`charon mount`** `<run|stop|status|install>` — mount the rclone remote via
+  FUSE at `~/<remote>` with feels-like-local VFS-cache flags, and manage its
+  systemd `--user` unit. Backend-specific flags (e.g. Drive's
+  `--drive-skip-gdocs`) apply only to the matching remote type.
+- **`charon sync`** `<run|seed|seed-full|install|config|check>` — keep the local
+  cache (`~/.<remote>`) in step with the mount using Unison (the mount is
+  canonical), driven by per-subtree **profiles**.
 
 ## Install
 
@@ -42,7 +43,7 @@ defines one synced subtree:
     #SEED_PRIORITY=Docs/now    # subtree seeded synchronously at install
     SEED_FULL_ORDER=10         # join the background full seed, ascending
 
-`charon-sync install` generates a Unison profile + a systemd timer per config,
+`charon sync install` generates a Unison profile + a systemd timer per config,
 lays the working links, seeds the priority subtrees synchronously, then
 bulk-seeds the full tree in the background. Ships `share/charon/example.conf`;
 `setup.sh bootstrap` copies it into an empty `profiles.d`.

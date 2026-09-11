@@ -3,9 +3,9 @@
 # remote-storage sync suite. The SINGLE entry point a consumer or provisioning
 # layer uses.
 #
-# The tools, in bin/:
-#   charon-mount   mount an rclone remote via FUSE + its systemd --user unit
-#   charon-sync    keep a local cache in step with the mount (unison), driven by
+# One command, bin/charon, dispatching to the mount / sync impls in libexec/:
+#   charon mount   mount an rclone remote via FUSE + its systemd --user unit
+#   charon sync    keep a local cache in step with the mount (unison), driven by
 #                  per-subtree profiles in ~/.config/charon/profiles.d/*.conf
 #
 #   ./setup.sh install     symlink the tools (+ libexec/share/man) into ~/.local

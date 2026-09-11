@@ -1,0 +1,32 @@
+#!/bin/sh
+# charon - remote-storage mount + bidirectional sync over rclone. A thin front
+# that dispatches to the mount / sync implementations in ../libexec.
+#
+#   charon mount <run|stop|status|install>
+#   charon sync  <run|seed|seed-full|install|config|check>
+#   charon --help
+#
+# The mount owns the rclone FUSE mount; sync keeps the local cache in step with
+# it (per-subtree profiles in ~/.config/charon/profiles.d). See charon(1).
+set -eu
+_self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+_lib=$(dirname "$_self")/../libexec
+
+usage() {
+  cat <<EOF
+usage: charon <mount|sync> [args...]
+
+  charon mount <run|stop|status|install>
+  charon sync  <run|seed|seed-full|install|config|check>
+
+The mount owns the rclone FUSE mount; sync keeps the local cache in step with
+it (per-subtree profiles in ~/.config/charon/profiles.d). See charon(1).
+EOF
+}
+
+case "${1:-}" in
+  mount) shift; APP_NAME="charon mount" exec "$_lib/charon-mount" "$@" ;;
+  sync)  shift; APP_NAME="charon sync"  exec "$_lib/charon-sync"  "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "charon: unknown subcommand '$1'" >&2; usage >&2; exit 2 ;;
+esac
