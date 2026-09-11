@@ -15,7 +15,7 @@ export CHARON_NOTIFY=my-notifier        # should be baked into the service unit
 # stubs: install must not touch the real system. dpkg reports unison present
 # (so no apt), the rest just succeed.
 mkdir -p "$T/bin"
-for s in sudo systemctl systemd-run rclone unison mountpoint; do
+for s in sudo systemctl systemd-run rclone unison mountpoint my-notifier; do
   printf '#!/bin/sh\nexit 0\n' > "$T/bin/$s"; chmod +x "$T/bin/$s"
 done
 printf '#!/bin/sh\necho "ii  unison  2.53"\n' > "$T/bin/dpkg"
@@ -57,8 +57,11 @@ svc=$XDG_CONFIG_HOME/systemd/user/charon-sync@.service
 [ -f "$svc" ] || fail "service template not generated"
 grep -q '^Environment=CHARON_REMOTE=testremote$' "$svc" \
   || fail "service did not bake CHARON_REMOTE"
-grep -q '^Environment=CHARON_NOTIFY=my-notifier$' "$svc" \
-  || fail "service did not bake the notify seam"
+# The notify seam must be baked as an ABSOLUTE path, not the bare name it was
+# configured with: a --user unit's PATH has no ~/bin or ~/.local/bin, so a bare
+# name is unresolvable exactly where it has to run, and faults reach nobody.
+grep -q "^Environment=CHARON_NOTIFY=$T/bin/my-notifier\$" "$svc" \
+  || fail "notify seam not resolved to an absolute path in the unit"
 
 # 4) the working link -> the cache subtree (~/ expanded)
 [ -L "$T/work-docs" ] || fail "working link not created"

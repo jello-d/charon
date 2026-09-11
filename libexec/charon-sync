@@ -208,9 +208,29 @@ setup_systemd_units() {
 
   # The service template carries the resolved remote + notify seam, so the timed
   # --user runs (no shell env) use the same config this install resolved.
+  #
+  # RESOLVE the notify command to an ABSOLUTE path before baking it. A --user
+  # unit runs with a bare system PATH: no ~/bin, no ~/.local/bin. So a BARE
+  # COMMAND NAME that resolves fine in the installing shell is unresolvable at
+  # run time, and every fault then reaches nobody. Found live on both boxes,
+  # which baked CHARON_NOTIFY=intervention-required while that command lives in
+  # ~/bin. Resolving HERE is the fix, because this shell has the full PATH.
+  # charon still does not care WHAT the command is: the seam stays a plain
+  # command contract, this only pins WHERE it is.
+  _notify=$CHARON_NOTIFY
+  case "$_notify" in
+    ""|/*) : ;;
+    *) _np=$(command -v "$_notify" 2>/dev/null || true)
+       if [ -n "$_np" ]; then
+         _notify=$_np; log_info "notify seam resolved to $_notify"
+       else
+         log_warn "CHARON_NOTIFY='$_notify' is not on PATH at install time;"\
+                  "baking as-is, but a --user unit will NOT resolve it"
+       fi ;;
+  esac
   extract_section "unit:charon-sync@.service" \
     | sed -e "s|@CHARON_REMOTE@|$CHARON_REMOTE|g" \
-          -e "s|@CHARON_NOTIFY@|$CHARON_NOTIFY|g" \
+          -e "s|@CHARON_NOTIFY@|$_notify|g" \
     >"$SYSTEMD_USER_DIR/charon-sync@.service"
 
   for p in $(profile_names); do
@@ -458,14 +478,25 @@ do_check() {
     fi
   done
   [ -n "$_any" ] || echo "  [WARN] no profiles configured ($PROFILES_DIR)"
-  if [ -n "$CHARON_NOTIFY" ]; then
-    if command -v "$CHARON_NOTIFY" >/dev/null 2>&1; then
-      echo; echo "== notify ($CHARON_NOTIFY) =="; notify list
+  # Audit the notify seam AS BAKED INTO THE UNIT, and probe it with the UNIT's
+  # PATH, not this shell's. Checking $CHARON_NOTIFY against an interactive PATH
+  # is how the seam looked healthy while being unresolvable where it actually
+  # runs: ~/bin is on a login PATH and on no --user unit's.
+  _unitpath=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  _baked=$(sed -n 's/^Environment=CHARON_NOTIFY=//p' \
+             "$SYSTEMD_USER_DIR/charon-sync@.service" 2>/dev/null | head -1)
+  if [ -n "$_baked" ]; then
+    case "$_baked" in
+      /*) [ -x "$_baked" ] && _nok=1 || _nok= ;;
+      *)  if (PATH=$_unitpath; command -v "$_baked" >/dev/null 2>&1)
+          then _nok=1; else _nok=; fi ;;
+    esac
+    if [ -n "$_nok" ]; then
+      echo "  [OK]   notify seam reachable from a unit: $_baked"
+      echo; echo "== notify ($_baked) =="; "$_baked" list 2>/dev/null || true
     else
-      # Configured but absent: the seam is wired to nothing, so every fault is
-      # silent. That is drift, and drift is what a check exists to catch.
-      echo "  [FAIL] CHARON_NOTIFY='$CHARON_NOTIFY' is not on PATH;"\
-           "sync faults raise no flag"
+      echo "  [FAIL] notify seam '$_baked' does NOT resolve on a unit PATH;"\
+           "faults raise no flag (re-run install to bake an absolute path)"
       _rc=1
     fi
   fi
@@ -507,6 +538,18 @@ silent = true
 times = true
 copyonconflict = true
 fat = true
+# fat is right for an rclone FUSE mount in every respect BUT ONE. It bundles
+# perms = 0, dontchmod, links = false and ignoreinodenumbers (all correct: a
+# cloud mount has no Unix permissions, no symlinks, no stable inode numbers)
+# AND ignorecase = true, which is WRONG here. Google Drive is case-SENSITIVE:
+# verified 2026-09-11 by writing CaseTest.txt and casetest.txt to the remote,
+# which coexisted with distinct content. Folding case makes unison REFUSE any
+# path where two names differ only by case ("cannot be synchronized to a file
+# system being treated as case insensitive") and exit 1 for the WHOLE profile,
+# not just that path. One Screenshots/screenshots pair blocked every media pass
+# on both boxes. The manual blesses overriding a single component of fat, so
+# undo exactly the one that does not fit the backend.
+ignorecase = false
 # Unison's own transfer temps are NEVER content. A run killed mid-transfer
 # strands one in the destination dir; with no ignore, the NEXT pass sees it as
 # an ordinary new file and REPLICATES it to the other side -- so a crumb on the
