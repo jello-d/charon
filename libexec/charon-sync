@@ -156,6 +156,50 @@ check_online() {
   return 2
 }
 
+# 0 if <dir> holds at least one entry (hidden ones count). A plain glob would
+# report the unexpanded pattern on an empty dir, so test each candidate.
+dir_has_entries() {   # <dir>
+  [ -d "$1" ] || return 1
+  for _e in "$1"/* "$1"/.[!.]*; do
+    [ -e "$_e" ] || [ -L "$_e" ] && return 0
+  done
+  return 1
+}
+
+# Guard the DEAD-MOUNT signature before a two-way pass runs.
+#
+# A FUSE mount that has lost its backend does NOT stop being a directory: it
+# answers, and presents an EMPTY one. Under a two-way sync that is
+# indistinguishable from "the remote deleted everything", so the pass
+# faithfully propagates the emptiness as deletions. confirmbigdel aborts when a
+# whole root empties, but NOT when one subtree does while its siblings still
+# read, and that partially-dead case is exactly what bit here: unison really
+# did log `Deleting Images/Screenshots/screenshot_01.png from
+# /home/jello/gdrive/Media`, and the file survived only in a trashed temp.
+#
+# The test is ASYMMETRIC on purpose. Source-empty while cache-full is the
+# dead-mount signature and is refused. The REVERSE (source full, cache empty)
+# is a FIRST SEED and must be allowed, or no new profile could ever populate.
+check_source_sane() {   # <subtree>
+  if ! dir_has_entries "$CHARON_MOUNT"; then
+    log_error "source root '$CHARON_MOUNT' is EMPTY; the mount looks dead."
+    log_error "refusing the pass: a two-way sync would propagate that"\
+              "emptiness to the remote as deletions."
+    return 1
+  fi
+  _sm=$CHARON_MOUNT/$1
+  _sc=$CHARON_CACHE/$1
+  if [ -d "$_sm" ] && ! dir_has_entries "$_sm" && dir_has_entries "$_sc"; then
+    log_error "source subtree '$_sm' is EMPTY while cache '$_sc' is not."
+    log_error "that is the dead-mount signature, so the pass is REFUSED"\
+              "rather than propagating deletions."
+    log_error "if the remote really was emptied on purpose, clear the cache"\
+              "subtree by hand and re-run."
+    return 1
+  fi
+  return 0
+}
+
 # Readiness for a sync run:  0 ready / 1 fault (flag) / 2 skip this pass.
 check_runtime_prereqs() {
   check_online
@@ -193,16 +237,25 @@ install_packages() {
   sudo apt-get install -y unison
 }
 
+# The prf this charon WOULD generate for <profile>, on stdout. ONE renderer,
+# used by install to WRITE the file and by check to DIFF the live one against
+# it, so "what is installed" and "what this version asserts" cannot drift apart
+# unnoticed. That drift is not hypothetical: three interim hand-patches rode on
+# both boxes' prfs and units at once, and nothing could see them.
+render_prf() {   # <profile>
+  _sub=$(profile_get "$1" SUBTREE); [ -n "$_sub" ] || return 1
+  extract_section "prf:charon" \
+    | sed -e "s|@MOUNT_ROOT@|$CHARON_MOUNT/$_sub|g" \
+          -e "s|@CACHE_ROOT@|$CHARON_CACHE/$_sub|g" \
+          -e "s|@LABEL@|charon $CHARON_REMOTE:$_sub|g"
+}
+
 setup_unison_profiles() {
   log_info "setting up Unison profiles in $UNISON_DIR"
   mkdir -p "$UNISON_DIR"
   for p in $(profile_names); do
     _sub=$(profile_get "$p" SUBTREE); [ -n "$_sub" ] || continue
-    extract_section "prf:charon" \
-      | sed -e "s|@MOUNT_ROOT@|$CHARON_MOUNT/$_sub|g" \
-            -e "s|@CACHE_ROOT@|$CHARON_CACHE/$_sub|g" \
-            -e "s|@LABEL@|charon $CHARON_REMOTE:$_sub|g" \
-      >"$UNISON_DIR/charon-$p.prf"
+    render_prf "$p" >"$UNISON_DIR/charon-$p.prf"
   done
 }
 
@@ -332,56 +385,78 @@ seed_full() {
   return "$_rc"
 }
 
+# The GATE for one profile:  0 go / EX_SKIP skip cheaply / 1 fault (notified).
+gate_profile() {   # <profile> <service-name>
+  check_runtime_prereqs
+  case $? in
+    0) : ;;
+    2) log_warn "SKIPPED charon-$1: no work done this pass"
+       return "$EX_SKIP" ;;
+    *) notify flag "$2" \
+         "'$CHARON_MOUNT' mount or cache not ready; check mount + cache."
+       return 1 ;;
+  esac
+  # prereqs prove the plumbing is up; this proves the SOURCE is not lying about
+  # being empty. A fault, not a skip: an empty source over a populated cache
+  # means something is wrong, and silence would be the whole bug again.
+  _sub=$(profile_get "$1" SUBTREE)
+  if [ -n "$_sub" ] && ! check_source_sane "$_sub"; then
+    MSG="source for '$1' looks dead (empty subtree); pass REFUSED so no"
+    MSG="$MSG deletions propagate to the remote. Check the mount."
+    notify flag "$2" "$MSG"
+    return 1
+  fi
+  return 0
+}
+
+# Run unison for <unison-profile>, under a sleep inhibitor if one can be had
+# and WITHOUT it if not. Returns unison's own status.
+#
+# unison blocks in uninterruptible D-state on a FUSE mount, so a suspend
+# mid-pass fails at the freeze step and (with logind retrying a lid close)
+# LOOPS. A sleep BLOCK inhibitor makes a suspend DEFER until the pass ends.
+#
+# But the inhibitor is a NICETY, never a prerequisite. Acquiring a block
+# inhibitor needs polkit authorization that a --user manager session with NO
+# SEAT does not get: polkit answers "Access denied ... requires interactive
+# authentication" and systemd-inhibit exits 1. The whole pass used to hang off
+# that one command, so a denial did not degrade the sync, it CANCELLED it, and
+# manifestor failed 5 of 6 timed runs that way while manifold (seated session)
+# looked perfectly healthy. Not syncing is strictly worse than syncing
+# unprotected, so a denial WARNS and proceeds. The inhibitor is PROBED with a
+# throwaway acquire first, so a real non-zero is always unison's, never
+# polkit's.
+#
+# The timeout is a BACKSTOP, not a pacer. At the old 600s it was neither: a
+# cold or large pass over FUSE routinely outran it, and every kill stranded a
+# partial transfer temp in the destination (see the ignore in prf:charon for
+# what that cost). The inhibitor protects suspend; the timeout only has to
+# bound a genuinely WEDGED run, so it sits far above any healthy pass.
+run_unison_guarded() {   # <unison-profile>
+  _up=$1
+  _inh="systemd-inhibit --what=sleep --who=charon-sync --mode=block"
+  set -- timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-3600}" \
+    unison "$_up" -auto -batch -ui text -silent
+  if $_inh --why="charon-sync probe" true 2>/dev/null; then
+    $_inh --why="unison $_up syncing (unfreezable on FUSE)" "$@"
+    return $?
+  fi
+  log_warn "cannot hold the sleep inhibitor (polkit denied, or"\
+           "systemd-inhibit absent); syncing UNPROTECTED -- a suspend"\
+           "mid-pass may wedge on the FUSE mount"
+  "$@"
+}
+
 run_sync_profile() {
   PROFILE="$1"
   UNISON_PROFILE="charon-$PROFILE"
   SERVICE_NAME="charon-${PROFILE}-sync"
 
-  check_runtime_prereqs
-  case $? in
-    0) : ;;
-    2) log_warn "SKIPPED $UNISON_PROFILE: no work done this pass"
-       return "$EX_SKIP" ;;
-    *)
-      notify flag "$SERVICE_NAME" \
-        "'$CHARON_MOUNT' mount or cache not ready; check mount + cache."
-      return 1 ;;
-  esac
+  gate_profile "$PROFILE" "$SERVICE_NAME"; _g=$?
+  [ "$_g" -eq 0 ] || return "$_g"
 
   log_info "running Unison profile (non-interactive): $UNISON_PROFILE"
-  # unison blocks in uninterruptible D-state on the FUSE mount, so a suspend
-  # mid-sync would fail at the freeze step and (on a lid-close logind retries)
-  # LOOP. Hold a sleep BLOCK inhibitor so a suspend DEFERS until the sync ends;
-  # a timeout caps a hung sync so it can never defer suspend indefinitely.
-  #
-  # The cap is a BACKSTOP, not a pacer. At the old 600s it was neither: a cold
-  # or large pass over FUSE routinely outran it, and every kill stranded a
-  # partial transfer temp in the destination (see the ignore in prf:charon for
-  # what that then cost). The inhibitor, not the timeout, is what protects
-  # suspend; the timeout only has to bound a genuinely WEDGED run, so it is set
-  # far above any healthy pass.
-  # The inhibitor is a SAFETY NICETY, never a prerequisite. Acquiring a BLOCK
-  # inhibitor needs polkit authorization that a --user manager session does not
-  # always get: on a session with no seat, polkit answers "Access denied ...
-  # requires interactive authentication" and systemd-inhibit exits 1. Because
-  # the whole pass used to hang off that one command, a denial did not degrade
-  # the sync, it CANCELLED it -- manifestor failed 5 of 6 timed documents runs
-  # this way while manifold (whose session has a seat) was unaffected. Not
-  # syncing is far worse than syncing unprotected, so a denial now WARNS and
-  # proceeds. Probe with a throwaway inhibit so a real failure is unison's.
-  _inh="systemd-inhibit --what=sleep --who=charon-sync --mode=block"
-  set -- timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-3600}" \
-    unison "$UNISON_PROFILE" -auto -batch -ui text -silent
-  if $_inh --why="charon-sync probe" true 2>/dev/null; then
-    $_inh --why="unison $UNISON_PROFILE syncing (unfreezable on FUSE)" "$@"
-    RET=$?
-  else
-    log_warn "cannot hold the sleep inhibitor (polkit denied, or"\
-             "systemd-inhibit absent); syncing UNPROTECTED -- a suspend"\
-             "mid-pass may wedge on the FUSE mount"
-    "$@"
-    RET=$?
-  fi
+  run_unison_guarded "$UNISON_PROFILE"; RET=$?
 
   if [ $RET -eq 0 ]; then
     notify clear "$SERVICE_NAME"; return 0
@@ -464,75 +539,112 @@ do_install() {
   log_info "install: complete"
 }
 
-do_check() {
-  echo "== charon-sync systemd check =="
-  _rc=0
+# Each check_* below prints its own [OK]/[WARN]/[FAIL] lines and returns
+# non-zero on DRIFT; do_check only aggregates. Split out because one function
+# was doing four unrelated audits.
+check_service_template() {
+  _r=0
   if [ -f "$SYSTEMD_USER_DIR/charon-sync@.service" ]; then
     echo "  [OK]   service template installed"
   else
-    echo "  [FAIL] charon-sync@.service missing (run 'charon sync install')"
-    _rc=1
+    echo "  [FAIL] charon-sync@.service missing (run '${APP_NAME} install')"
+    _r=1
   fi
   if systemctl --user list-unit-files 2>/dev/null \
        | grep -q '^charon-sync@\.service'; then
     echo "  [OK]   charon-sync@.service registered"
   else
-    echo "  [FAIL] charon-sync@.service not registered"; _rc=1
+    echo "  [FAIL] charon-sync@.service not registered"; _r=1
   fi
-  _any=
-  for p in $(profile_names); do
-    _any=1; t="charon-sync-$p.timer"
-    if systemctl --user is-enabled "$t" >/dev/null 2>&1; then
-      echo "  [OK]   $t enabled"
-    else echo "  [FAIL] $t not enabled"; _rc=1; fi
-    if systemctl --user is-active "$t" >/dev/null 2>&1; then
-      echo "  [OK]   $t active"
-    else echo "  [WARN] $t not active"; fi
-    # PRESENCE IS NOT FUNCTION. An enabled, active timer whose service fails
-    # every single pass looks perfectly healthy to a presence check, which is
-    # how manifestor sat at 5-of-6 failed runs behind an all-[OK] audit for
-    # hours. Report the real outcome of the last run, and FAIL on it.
-    _u="charon-sync@$p.service"
-    _res=$(systemctl --user show "$_u" -p Result --value 2>/dev/null)
-    _ts=$(systemctl --user show "$_u" -p ExecMainStartTimestamp --value \
-            2>/dev/null)
-    _st=$(systemctl --user show "$_u" -p ExecMainStatus --value 2>/dev/null)
-    if [ -z "$_ts" ]; then
-      echo "  [WARN] $_u has not run yet"
-    elif [ "$_res" = success ] && [ "$_st" = "$EX_SKIP" ]; then
-      # systemd calls 75 a success (SuccessExitStatus); charon must not. A pass
-      # that did nothing is not a pass that worked.
-      echo "  [WARN] $_u last run: SKIPPED, no work done (offline,"\
-           "rate-limited, or lock held) at $_ts"
-    elif [ "$_res" = success ]; then
-      echo "  [OK]   $_u last run: success"
-    else
-      echo "  [FAIL] $_u last run: $_res ($_ts)"; _rc=1
-    fi
-  done
-  [ -n "$_any" ] || echo "  [WARN] no profiles configured ($PROFILES_DIR)"
-  # Audit the notify seam AS BAKED INTO THE UNIT, and probe it with the UNIT's
-  # PATH, not this shell's. Checking $CHARON_NOTIFY against an interactive PATH
-  # is how the seam looked healthy while being unresolvable where it actually
-  # runs: ~/bin is on a login PATH and on no --user unit's.
+  return $_r
+}
+
+# Three questions per profile, because any one of them alone lies: is the timer
+# ARMED, did the last run actually WORK, and is the live prf the one THIS
+# version would generate.
+check_profile_health() {   # <profile>
+  _r=0
+  _t="charon-sync-$1.timer"
+  if systemctl --user is-enabled "$_t" >/dev/null 2>&1; then
+    echo "  [OK]   $_t enabled"
+  else echo "  [FAIL] $_t not enabled"; _r=1; fi
+  if systemctl --user is-active "$_t" >/dev/null 2>&1; then
+    echo "  [OK]   $_t active"
+  else echo "  [WARN] $_t not active"; fi
+
+  # PRESENCE IS NOT FUNCTION. An enabled, active timer whose service fails
+  # every single pass looks perfectly healthy to a presence check, which is how
+  # manifestor sat at 5-of-6 failed runs behind an all-[OK] audit for hours.
+  _u="charon-sync@$1.service"
+  _res=$(systemctl --user show "$_u" -p Result --value 2>/dev/null)
+  _ts=$(systemctl --user show "$_u" -p ExecMainStartTimestamp --value \
+          2>/dev/null)
+  _st=$(systemctl --user show "$_u" -p ExecMainStatus --value 2>/dev/null)
+  if [ -z "$_ts" ]; then
+    echo "  [WARN] $_u has not run yet"
+  elif [ "$_res" = success ] && [ "$_st" = "$EX_SKIP" ]; then
+    # systemd calls 75 a success (SuccessExitStatus); charon must not. A pass
+    # that did nothing is not a pass that worked.
+    echo "  [WARN] $_u last run: SKIPPED, no work done (offline,"\
+         "rate-limited, or lock held) at $_ts"
+  elif [ "$_res" = success ]; then
+    echo "  [OK]   $_u last run: success"
+  else
+    echo "  [FAIL] $_u last run: $_res ($_ts)"; _r=1
+  fi
+
+  # ASSERTED vs ACTUAL on the generated profile itself. A hand-patched prf, or
+  # one left behind by a stale clone, is otherwise invisible: the running code
+  # can carry a fix the live prf does not, and the sync quietly keeps using the
+  # old policy. Three such patches rode on both boxes at once, unseen.
+  _prf=$UNISON_DIR/charon-$1.prf
+  if [ ! -f "$_prf" ]; then
+    echo "  [FAIL] $_prf missing (run '${APP_NAME} install')"; _r=1
+  elif render_prf "$1" | diff -q - "$_prf" >/dev/null 2>&1; then
+    echo "  [OK]   charon-$1.prf matches this version's template"
+  else
+    echo "  [FAIL] charon-$1.prf DIFFERS from this version's template"\
+         "(hand-patched, or a stale install); run '${APP_NAME} install'"
+    _r=1
+  fi
+  return $_r
+}
+
+# Audit the notify seam AS BAKED INTO THE UNIT, probed with the UNIT's PATH and
+# not this shell's. Checking $CHARON_NOTIFY against an interactive PATH is how
+# the seam looked healthy while being unresolvable where it actually runs:
+# ~/bin is on a login PATH and on no --user unit's.
+check_notify_seam() {
   _unitpath=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   _baked=$(sed -n 's/^Environment=CHARON_NOTIFY=//p' \
              "$SYSTEMD_USER_DIR/charon-sync@.service" 2>/dev/null | head -1)
-  if [ -n "$_baked" ]; then
-    case "$_baked" in
-      /*) [ -x "$_baked" ] && _nok=1 || _nok= ;;
-      *)  if (PATH=$_unitpath; command -v "$_baked" >/dev/null 2>&1)
-          then _nok=1; else _nok=; fi ;;
-    esac
-    if [ -n "$_nok" ]; then
-      echo "  [OK]   notify seam reachable from a unit: $_baked"
-      echo; echo "== notify ($_baked) =="; "$_baked" list 2>/dev/null || true
-    else
-      echo "  [FAIL] notify seam '$_baked' does NOT resolve on a unit PATH;"\
-           "faults raise no flag (re-run install to bake an absolute path)"
-      _rc=1
-    fi
+  [ -n "$_baked" ] || return 0
+  case "$_baked" in
+    /*) [ -x "$_baked" ] && _nok=1 || _nok= ;;
+    *)  if (PATH=$_unitpath; command -v "$_baked" >/dev/null 2>&1)
+        then _nok=1; else _nok=; fi ;;
+  esac
+  if [ -z "$_nok" ]; then
+    echo "  [FAIL] notify seam '$_baked' does NOT resolve on a unit PATH;"\
+         "faults raise no flag (re-run install to bake an absolute path)"
+    return 1
   fi
+  echo "  [OK]   notify seam reachable from a unit: $_baked"
+  echo; echo "== notify ($_baked) =="; "$_baked" list 2>/dev/null || true
+  return 0
+}
+
+do_check() {
+  echo "== charon-sync systemd check =="
+  _rc=0
+  check_service_template || _rc=1
+  _any=
+  for p in $(profile_names); do
+    _any=1
+    check_profile_health "$p" || _rc=1
+  done
+  [ -n "$_any" ] || echo "  [WARN] no profiles configured ($PROFILES_DIR)"
+  check_notify_seam || _rc=1
   return $_rc
 }
 

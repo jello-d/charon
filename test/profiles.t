@@ -68,7 +68,20 @@ grep -q "^Environment=CHARON_NOTIFY=$T/bin/my-notifier\$" "$svc" \
 [ "$(readlink "$T/work-docs")" = "$T/.testremote/Docs" ] \
   || fail "working link points at the wrong target"
 
-# 5) NO profile == no generation (a bare config dir is inert, not an error)
+# 5) check must SEE a hand-patched prf. install and check share one renderer,
+# so a live prf that no longer matches the template this version would generate
+# is reported as drift rather than passing unnoticed (three interim hand
+# patches once rode on two boxes' prfs and units at the same time, invisibly).
+PATH="$T/bin:$PATH" sh "$HERE/bin/charon" sync check >"$T/chk1.out" 2>&1 || :
+grep -q '\[OK\].*charon-docs.prf matches' "$T/chk1.out" \
+  || fail "check did not verify the generated prf against the template"
+printf '\n# hand patch\nfastcheck = false\n' >> "$prf"
+PATH="$T/bin:$PATH" sh "$HERE/bin/charon" sync check >"$T/chk2.out" 2>&1
+[ "$?" = 0 ] && fail "check exited 0 on a hand-patched prf" || :
+grep -q '\[FAIL\].*charon-docs.prf DIFFERS' "$T/chk2.out" \
+  || fail "check did not report the hand-patched prf as drift"
+
+# 6) NO profile == no generation (a bare config dir is inert, not an error)
 rm -f "$XDG_CONFIG_HOME/charon/profiles.d/docs.conf"
 PATH="$T/bin:$PATH" sh "$HERE/bin/charon" sync config >"$T/cfg.out" 2>&1 \
   || fail "config errored with no profiles"
