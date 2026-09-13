@@ -30,23 +30,49 @@ Honors `PREFIX` (default `~/.local`) and the `XDG_*` vars. Runtime deps:
 rclone should come from upstream, not a distro package — a distro rclone is
 often too old for current OAuth flows.
 
-## Profiles (config, not baked in)
+## Configuration (data, not baked in)
 
-Each `~/.config/charon/profiles.d/<name>.conf` (KEY=VALUE, read literally)
-defines one synced subtree:
+Two kinds of file, both KEY=VALUE and read literally.
 
-    SUBTREE=Documents          # path under ~/<remote> + ~/.<remote> (required)
-    LINK=~/Documents           # optional working dir -> the cache subtree
+A **source** (`sources.d/<name>.conf`) is one tree to cache, and how it exists:
+
+    MOUNT=~/gdrive             # the source root
+    CACHE_ROOT=~/.gdrive       # the local cache root
+    PROVIDER=rclone            # or `none`: bring your own tree
+    REMOTE=gdrive              # provider config
+
+A source named `default` is **implicit**, derived from `CHARON_REMOTE`, so a
+single-remote install needs no `sources.d` file at all.
+
+A **profile** (`profiles.d/<name>.conf`) is one subtree to reconcile, plus its
+policy:
+
+    SOURCE=gdrive:Documents    # <source>:<subtree> (or the legacy SUBTREE=)
     INTERVAL=30m               # unison timer cadence (OnUnitActiveSec)
     BOOT=10m                   # timer OnBootSec
     JITTER=2m                  # timer RandomizedDelaySec
     #SEED_PRIORITY=Docs/now    # subtree seeded synchronously at install
     SEED_FULL_ORDER=10         # join the background full seed, ascending
+    #IGNORE=*.tmp              # exclude; repeatable
+    #CONFLICT=remote           # remote (default) | local | newer
+    #DELETE=propagate          # propagate (default) | never
 
-`charon sync install` generates a Unison profile + a systemd timer per config,
-lays the working links, seeds the priority subtrees synchronously, then
-bulk-seeds the full tree in the background. Ships `share/charon/example.conf`;
-`setup.sh bootstrap` copies it into an empty `profiles.d`.
+Several profiles normally share one source, which is why the two are separate:
+the mount path and the remote name are one fact, and putting them on the
+profile would let two profiles disagree about the same tree.
+
+`IGNORE`/`CONFLICT`/`DELETE` are charon's own vocabulary, translated to the
+reconciler in one place, so the engine underneath stays replaceable. For
+anything beyond them, a verbatim `~/.unison/charon-<name>.prf.local` is
+included if present, and is explicitly unsupported.
+
+There is deliberately **no working-link key**: charon manages a cache, and
+where a desktop surfaces that cache is layout an integrator owns.
+
+`charon sync install` generates a Unison profile + a systemd timer per profile,
+seeds the priority subtrees synchronously, then bulk-seeds the full tree in the
+background. Ships `share/charon/example.conf` and `example-source.conf`;
+`setup.sh bootstrap` copies the former into an empty `profiles.d`.
 
 ## Configuration seams
 

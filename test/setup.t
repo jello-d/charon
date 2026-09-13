@@ -32,8 +32,8 @@ grep -q '\[OK\].*charon present' "$T/check.out" \
 sh "$HERE/setup.sh" bootstrap >/dev/null || fail "bootstrap errored"
 [ -f "$XDG_CONFIG_HOME/charon/profiles.d/example.conf" ] \
   || fail "bootstrap did not seed the example profile"
-grep -q '^SUBTREE=' "$XDG_CONFIG_HOME/charon/profiles.d/example.conf" \
-  || fail "seeded example missing SUBTREE"
+grep -q '^SOURCE=' "$XDG_CONFIG_HOME/charon/profiles.d/example.conf" \
+  || fail "seeded example does not name a SOURCE"
 printf 'SUBTREE=Keep\n' > "$XDG_CONFIG_HOME/charon/profiles.d/mine.conf"
 sh "$HERE/setup.sh" bootstrap >/dev/null || fail "second bootstrap errored"
 grep -q '^SUBTREE=Keep' "$XDG_CONFIG_HOME/charon/profiles.d/mine.conf" \

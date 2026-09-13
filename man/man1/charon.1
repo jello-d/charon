@@ -26,19 +26,64 @@ Keep the local cache
 .RI ( ~/.<remote> )
 in step with the mount using Unison; the mount is canonical. Sync is driven by
 per-subtree PROFILES \(em nothing is baked in.
-.SH PROFILES
-Each
+.SH CONFIGURATION
+Configuration is data, in two kinds, both KEY=VALUE and read literally.
+.SS Sources
+A
+.I ~/.config/charon/sources.d/<name>.conf
+is one tree to cache and how it comes to exist:
+.BR MOUNT " (the source root), " CACHE_ROOT " (the local cache root),"
+.B PROVIDER
+.RB ( rclone ", or " none " for a tree something else provides: an fstab entry,"
+an automounted share, a local directory) and provider config such as
+.BR REMOTE .
+.PP
+A source named
+.B default
+is IMPLICIT, derived from
+.BR CHARON_REMOTE ,
+so a single-remote install needs no sources.d file at all.
+.SS Profiles
+A
 .I ~/.config/charon/profiles.d/<name>.conf
-(KEY=VALUE, read literally) defines one synced subtree:
-.BR SUBTREE " (required), " LINK " (a working dir symlinked to the cache),"
-.BR INTERVAL / BOOT / JITTER " (the unison timer cadence), " SEED_PRIORITY
-(a subtree seeded synchronously at install) and
+is one subtree to reconcile, plus its policy:
+.B SOURCE
+.RI ( <source>:<subtree> ", or the legacy " SUBTREE= " shorthand),"
+.BR INTERVAL / BOOT / JITTER " (the timer cadence), " SEED_PRIORITY
+(seeded synchronously at install) and
 .B SEED_FULL_ORDER
-(join the background full seed, ascending). charon ships
-.I share/charon/example.conf
-and
+(join the background full seed, ascending).
+.PP
+Several profiles normally share one source, which is why the two are separate:
+the mount path and the remote name are one fact, and putting them on the
+profile would let two profiles disagree about the same tree.
+.PP
+There is deliberately no working-link key. charon manages a cache; where a
+desktop surfaces that cache is layout, and layout belongs to the integrator.
+.SS Policy
+Three knobs, in charon's own vocabulary rather than the reconciler's, so that
+the underlying engine stays replaceable:
+.TP
+.B IGNORE
+a path to exclude; repeatable. A value containing
+.RB ' / '
+is a path from the root of the subtree, anything else matches that name at any
+depth.
+.TP
+.B CONFLICT
+which side wins when both changed:
+.BR remote " (default; the overwritten local copy is kept, locally), "
+.BR local " (the overwritten copy then lands on the REMOTE), or " newer .
+.TP
+.B DELETE
+.BR propagate " (default) or " never ,
+where a deletion is never mirrored and a file removed on one side is restored
+from the other on the next pass.
+.PP
+charon ships
+.IR share/charon/example.conf " and " share/charon/example-source.conf ;
 .B "setup.sh bootstrap"
-copies it into an empty profiles.d to get you started.
+copies the former into an empty profiles.d to get you started.
 .SH ENVIRONMENT
 .TP
 .B CHARON_REMOTE

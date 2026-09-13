@@ -4,17 +4,39 @@
 # FUSE mount (~/<remote>) using Unison. The mount is canonical; the cache is the
 # fast, offline-usable copy that working dirs read from (FUSE reads are slow).
 #
-# PROFILES ARE CONFIG, not baked in. Each profiles.d/<name>.conf under
-# ~/.config/charon (KEY=VALUE, read literally) defines one synced subtree:
-#   SUBTREE=Media               path under the remote + cache to sync (required)
-#   LINK=~/Media                optional working dir -> the cache subtree
-#   INTERVAL=30m                unison timer cadence (OnUnitActiveSec; def 30m)
-#   BOOT=12m                    timer OnBootSec (default 10m)
-#   JITTER=5m                   timer RandomizedDelaySec (default 2m)
-#   SEED_PRIORITY=Media/Images/wallpaper  optional subtree rclone-seeded FIRST,
-#                               synchronously at install (needed now)
-#   SEED_FULL_ORDER=20          if set, this SUBTREE joins the background full
-#                               seed, in ascending order (empty = skip)
+# CONFIG IS DATA, in two kinds, both KEY=VALUE and read literally.
+#
+# A SOURCE (sources.d/<name>.conf) is one tree to cache, and how it exists:
+#   MOUNT=~/gdrive              the source root
+#   CACHE_ROOT=~/.gdrive        the local cache root
+#   PROVIDER=rclone             reserved; who brings the source up (see NOTE)
+#   REMOTE=gdrive               provider config (rclone remote name)
+# The 'default' source is IMPLICIT, synthesized from CHARON_REMOTE, so a
+# single-remote install needs NO sources.d file at all.
+#
+# A PROFILE (profiles.d/<name>.conf) is one subtree to reconcile, and the
+# policy for it:
+#   SOURCE=gdrive:Media         <source>:<subtree>  (or the legacy SUBTREE=)
+#   INTERVAL=30m BOOT=12m JITTER=5m   unison timer cadence
+#   SEED_PRIORITY=Media/Images/wallpaper  rclone-seeded FIRST, at install
+#   SEED_FULL_ORDER=20          join the background full seed, ascending
+#   -- the three TIER 1 policy knobs, charon's own vocabulary: --
+#   IGNORE=*.tmp                exclude; repeatable. A value with '/' is a path
+#                               from the root, otherwise a name at any depth
+#   CONFLICT=remote|local|newer which side wins when both changed (def remote)
+#   DELETE=propagate|never      whether a deletion is mirrored (def propagate)
+#
+# WHY the split: several profiles share one source (Media and Documents both
+# live under one gdrive mount), so the mount and remote name are ONE fact. Put
+# them on the profile and two profiles can disagree about the same mount.
+#
+# There is deliberately NO working-link key. charon manages a cache; where a
+# desktop surfaces that cache is LAYOUT, which belongs to the integrator.
+#
+# NOTE: PROVIDER is parsed but not yet acted on; the provider seam (up/down/
+# status/health/traits/seed) lands next, and with it the backend TRAITS that
+# currently sit hardcoded in the prf template as cloud-mount assumptions.
+#
 # charon ships share/charon/example.conf and `setup.sh bootstrap` copies it into
 # an empty profiles.d; an integrator writes its own <name>.conf files.
 #
@@ -23,8 +45,8 @@
 #   charon sync run [profile]    # sync one profile, or all (default)
 #   charon sync seed             # rclone-copy the priority subtrees now
 #   charon sync seed-full        # rclone-copy the full configured tree, fast
-#   charon sync install          # profiles, units/timers, working links, seed
-#   charon sync config           # show where profiles + units live
+#   charon sync install          # profiles, units/timers, and the seed
+#   charon sync config           # show sources, profiles, and artifacts
 #   charon sync check            # systemd + notify health
 
 # Default WARN. Assigned with := so the ENVIRONMENT still wins: it used to be a
@@ -41,6 +63,7 @@ RCLONE_BIN="${RCLONE_BIN:-rclone}"
 UNISON_DIR="${UNISON_DIR:-$HOME/.unison}"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 PROFILES_DIR="$CHARON_CONFIG/profiles.d"
+SOURCES_DIR="$CHARON_CONFIG/sources.d"
 EXAMPLE_CONF="$(dirname "$_self")/../share/charon/example.conf"
 
 LOCKDIR="$HOME/.cache"
@@ -87,8 +110,8 @@ modes:
   run [profile] sync one profile by name, or all (default)
   seed          rclone-copy the priority subtrees straight from the remote
   seed-full     rclone-copy the full configured tree into the cache (fast)
-  install       install Unison profiles, systemd units/timers, links, and seed
-  config        show where profiles + units live
+  install       install Unison profiles, systemd units/timers, and seed
+  config        show sources, profiles, and where their artifacts live
   check         check systemd + notify health
 
 profiles come from ${PROFILES_DIR}/*.conf (see 'config').
@@ -116,6 +139,81 @@ profile_get() {   # <name> <KEY>
   # never match the literal "~/" prefix); strip it, then prepend $HOME.
   case "$_v" in "~/"*) _v="$HOME/${_v#"~/"}" ;; esac
   printf '%s' "$_v"
+}
+
+# Read every value of KEY from a profile (one line each), for the keys that are
+# legitimately repeatable. profile_get takes the FIRST only.
+profile_get_all() {   # <name> <KEY>
+  _pf=$PROFILES_DIR/$1.conf
+  [ -f "$_pf" ] || return 0
+  sed -n "s/^$2=//p" "$_pf"
+}
+
+#### sources ####
+# Configured source names, plus the implicit 'default' when any profile relies
+# on it (so `config` can show what is actually in play, not just what has a
+# file on disk).
+source_names() {
+  {
+    if [ -d "$SOURCES_DIR" ]; then
+      for _f in "$SOURCES_DIR"/*.conf; do
+        [ -f "$_f" ] || continue
+        _n=$(basename "$_f"); printf '%s\n' "${_n%.conf}"
+      done
+    fi
+    # plus whatever profiles actually reference, which includes the implicit
+    # 'default' that has no file on disk
+    for _p in $(profile_names); do
+      _n=$(profile_source_name "$_p"); [ -n "$_n" ] && printf '%s\n' "$_n"
+    done
+  } | sort -u
+  return 0
+}
+
+# A SOURCE is one tree to be cached, plus how it comes to exist. Profiles point
+# at one; several profiles share one source, which is why this is a separate
+# file rather than more keys on the profile: the mount and the remote name are
+# ONE fact, and storing it per profile would let two profiles disagree about
+# the same mount.
+#
+# The 'default' source is IMPLICIT, synthesized from CHARON_REMOTE, so a
+# single-remote install needs no sources.d file at all and a profile can keep
+# saying SUBTREE=Documents. Writing sources.d/default.conf overrides it.
+source_get() {   # <source> <KEY>
+  _sf=$SOURCES_DIR/$1.conf
+  _v=
+  [ -f "$_sf" ] && _v=$(sed -n "s/^$2=//p" "$_sf" | head -1)
+  if [ -z "$_v" ] && [ "$1" = default ]; then
+    case "$2" in
+      MOUNT)      _v=$CHARON_MOUNT ;;
+      CACHE_ROOT) _v=$CHARON_CACHE ;;
+      REMOTE)     _v=$CHARON_REMOTE ;;
+      PROVIDER)   _v=rclone ;;
+    esac
+  fi
+  case "$_v" in "~/"*) _v="$HOME/${_v#"~/"}" ;; esac
+  printf '%s' "$_v"
+}
+
+# Which source a profile reconciles against. SOURCE=<name>:<subtree>, or the
+# legacy SUBTREE=<subtree> shorthand meaning the implicit default source.
+profile_source_name() {   # <profile>
+  _s=$(profile_get "$1" SOURCE)
+  case "$_s" in
+    "")  [ -n "$(profile_get "$1" SUBTREE)" ] && printf 'default' || : ;;
+    *:*) printf '%s' "${_s%%:*}" ;;
+    *)   printf '%s' "$_s" ;;
+  esac
+}
+
+# The subtree under that source (may be empty: a source can be synced whole).
+profile_subtree() {   # <profile>
+  _s=$(profile_get "$1" SOURCE)
+  case "$_s" in
+    "")  profile_get "$1" SUBTREE ;;
+    *:*) printf '%s' "${_s#*:}" ;;
+    *)   printf '' ;;
+  esac
 }
 
 no_profiles_hint() {
@@ -226,6 +324,15 @@ check_runtime_prereqs() {
 
 check_install_prereqs() {
   log_info "checking prerequisites for install"
+  # Privilege is needed for exactly ONE thing: apt-installing unison when it is
+  # absent. Demanding it unconditionally made `charon install` unrunnable from
+  # any non-TTY context (an agent shell, a non-interactive ssh) on a box that
+  # needed no privilege at all, which turned every routine prf regeneration
+  # into a sudo handoff for no reason. Gate the sudo on the actual need.
+  if dpkg -l 2>/dev/null | grep -q '^ii  unison '; then
+    log_trace "'unison' present; install needs no privilege"
+    return 0
+  fi
   sudo true || { log_error "failed to acquire sudo privileges"; exit 3; }
 }
 
@@ -243,32 +350,80 @@ install_packages() {
 # unnoticed. That drift is not hypothetical: three interim hand-patches rode on
 # both boxes' prfs and units at once, and nothing could see them.
 render_prf() {   # <profile>
-  _sub=$(profile_get "$1" SUBTREE); [ -n "$_sub" ] || return 1
+  _src=$(profile_source_name "$1"); [ -n "$_src" ] || return 1
+  _sub=$(profile_subtree "$1")
+  _mnt=$(source_get "$_src" MOUNT); _cch=$(source_get "$_src" CACHE_ROOT)
+  [ -n "$_mnt" ] && [ -n "$_cch" ] || return 1
+  _mroot=$_mnt${_sub:+/$_sub}
+  _croot=$_cch${_sub:+/$_sub}
+  _label="charon $(source_get "$_src" REMOTE):$_sub"
+
+  # TIER 1, mapped onto unison HERE and nowhere else. Profiles speak charon's
+  # vocabulary; if they spoke unison's, unison would BE the interface and could
+  # never be replaced. With none of these set the output is byte-identical to
+  # the previous template, so an existing install does not drift.
+  _note="# the live mount is canonical"; _prefer=$_mroot
+  case "$(profile_get "$1" CONFLICT)" in
+    ""|remote) : ;;
+    local) _note="# the local cache wins conflicts (CONFLICT=local); NOTE the"
+           _note="$_note overwritten copy then lands on the REMOTE"
+           _prefer=$_croot ;;
+    newer) _note="# the newer mtime wins conflicts (CONFLICT=newer)"
+           _prefer=newer ;;
+    *) log_warn "profile '$1': unknown CONFLICT"\
+                "'$(profile_get "$1" CONFLICT)'; using 'remote'" ;;
+  esac
+
   extract_section "prf:charon" \
-    | sed -e "s|@MOUNT_ROOT@|$CHARON_MOUNT/$_sub|g" \
-          -e "s|@CACHE_ROOT@|$CHARON_CACHE/$_sub|g" \
-          -e "s|@LABEL@|charon $CHARON_REMOTE:$_sub|g"
+    | sed -e "s|@MOUNT_ROOT@|$_mroot|g" \
+          -e "s|@CACHE_ROOT@|$_croot|g" \
+          -e "s|@LABEL@|$_label|g" \
+          -e "s|@PREFER_NOTE@|$_note|" \
+          -e "s|@PREFER@|$_prefer|"
+
+  # DELETE=never: a deletion on either replica is not mirrored. The file is
+  # restored from the other side on the next pass, since with no deletion to
+  # propagate unison sees a one-sided file and copies it back.
+  if [ "$(profile_get "$1" DELETE)" = never ]; then
+    printf '# DELETE=never: deletions are never propagated, either way\n'
+    printf 'nodeletion = %s\n' "$_mroot" "$_croot"
+  fi
+
+  # IGNORE: charon's own spelling, translated here. A pattern containing '/' is
+  # a path relative to the root; anything else matches a name at any depth.
+  profile_get_all "$1" IGNORE | while IFS= read -r _ig; do
+    [ -n "$_ig" ] || continue
+    case "$_ig" in
+      */*) printf 'ignore = Path %s\n' "$_ig" ;;
+      *)   printf 'ignore = Name %s\n' "$_ig" ;;
+    esac
+  done
+
+  # TIER 2, the escape hatch: a verbatim file included as-is, UNSUPPORTED. It
+  # exists so Tier 1 does not have to grow a knob for every preference the
+  # engine happens to have. Emitted only when the file exists, because unison
+  # errors on a missing include -- so creating one is a config-time act that
+  # `check` reports as prf drift until `install` regenerates. That is the
+  # intended workflow, not a wart: an escape hatch should be visible.
+  if [ -f "$UNISON_DIR/charon-$1.prf.local" ]; then
+    printf '# Tier 2 escape hatch, included verbatim and UNSUPPORTED:\n'
+    printf 'include charon-%s.prf.local\n' "$1"
+  fi
 }
 
 setup_unison_profiles() {
   log_info "setting up Unison profiles in $UNISON_DIR"
   mkdir -p "$UNISON_DIR"
   for p in $(profile_names); do
-    _sub=$(profile_get "$p" SUBTREE); [ -n "$_sub" ] || continue
-    render_prf "$p" >"$UNISON_DIR/charon-$p.prf"
-  done
-}
-
-link_working_dirs() {
-  log_info "pointing working dirs at the local cache"
-  mkdir -p "$CHARON_CACHE"
-  for p in $(profile_names); do
-    _link=$(profile_get "$p" LINK); [ -n "$_link" ] || continue
-    _sub=$(profile_get "$p" SUBTREE); [ -n "$_sub" ] || continue
-    _target="$CHARON_CACHE/$_sub"
-    mkdir -p "$_target"
-    if [ -e "$_link" ] && [ ! -L "$_link" ]; then mv "$_link" "$_link.bak"; fi
-    ln -sfn "$_target" "$_link"
+    # Gate on render_prf itself, not on any one key: a profile may name its
+    # tree with SOURCE= or the legacy SUBTREE=, and only the renderer knows
+    # whether it resolved to a usable pair. Render to a temp first so a
+    # profile that cannot resolve does not leave a truncated prf behind.
+    if _out=$(render_prf "$p"); then
+      printf '%s\n' "$_out" >"$UNISON_DIR/charon-$p.prf"
+    else
+      log_warn "profile '$p': no usable source; generated no unison profile"
+    fi
   done
 }
 
@@ -360,7 +515,7 @@ priority_subtrees() {
 full_subtrees() {
   for p in $(profile_names); do
     _o=$(profile_get "$p" SEED_FULL_ORDER); [ -n "$_o" ] || continue
-    _sub=$(profile_get "$p" SUBTREE); [ -n "$_sub" ] || continue
+    _sub=$(profile_subtree "$p"); [ -n "$_sub" ] || continue
     printf '%s\t%s\n' "$_o" "$_sub"
   done | sort -n | cut -f2
 }
@@ -501,12 +656,19 @@ run_with_lock() {
 
 #### higher-level operations ####
 do_config() {
+  echo "sources dir:  $SOURCES_DIR"
+  for s in $(source_names); do
+    echo "  source '$s': mount=$(source_get "$s" MOUNT)" \
+         "cache=$(source_get "$s" CACHE_ROOT)"
+  done
   echo "profiles dir: $PROFILES_DIR"
   _any=
   for p in $(profile_names); do
     _any=1
-    echo "  profile '$p': subtree=$(profile_get "$p" SUBTREE)" \
-         "link=$(profile_get "$p" LINK)"
+    _s=$(profile_source_name "$p")
+    echo "  profile '$p': source=$_s subtree=$(profile_subtree "$p")" \
+         "conflict=$(profile_get "$p" CONFLICT)" \
+         "delete=$(profile_get "$p" DELETE)"
     echo "    unison: $UNISON_DIR/charon-$p.prf"
     echo "    timer:  $SYSTEMD_USER_DIR/charon-sync-$p.timer"
   done
@@ -520,7 +682,6 @@ do_install() {
   install_packages
   if [ -z "$(profile_names)" ]; then no_profiles_hint; fi
   setup_unison_profiles
-  link_working_dirs
   setup_systemd_units
 
   # Seed the priority subtrees SYNCHRONOUSLY (a fresh box needs them now, e.g. a
@@ -703,8 +864,8 @@ ignorecase = false
 # independently stranded), 54 MB each way. Ignoring them makes the sync blind to
 # its own litter; sweeping it is an out-of-band job.
 ignore = Name .unison.*.unison.tmp
-# the live mount is canonical
-prefer = @MOUNT_ROOT@
+@PREFER_NOTE@
+prefer = @PREFER@
 confirmbigdel = true
 fastcheck = true
 __SECTION_END__ prf:charon

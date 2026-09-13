@@ -1,7 +1,7 @@
 #!/bin/sh
 # profiles.t - the config-driven engine: a profiles.d/<name>.conf drives the
 # generated unison profile, the systemd timer (with its cadence), the service
-# template's baked config, and the working-link -- all from config, no baked
+# template's baked config -- all from config, with no baked
 # Media/Documents. Runs `charon-sync install` against stubs (no real rclone/
 # unison/systemctl), everything confined to a scratch HOME.
 . "$(dirname "$0")/lib.sh"
@@ -23,11 +23,11 @@ chmod +x "$T/bin/dpkg"
 # sudo just runs the rest (so `sudo true` etc. work)
 printf '#!/bin/sh\nexec "$@"\n' > "$T/bin/sudo"; chmod +x "$T/bin/sudo"
 
-# a profile: subtree Docs, working link, custom cadence, joins the full seed
+# a profile using the LEGACY SUBTREE= shorthand, which must keep working: it
+# means "the implicit default source", so an existing install needs no edits.
 mkdir -p "$XDG_CONFIG_HOME/charon/profiles.d"
 cat > "$XDG_CONFIG_HOME/charon/profiles.d/docs.conf" <<'EOF'
 SUBTREE=Docs
-LINK=~/work-docs
 INTERVAL=15m
 BOOT=3m
 JITTER=1m
@@ -63,10 +63,10 @@ grep -q '^Environment=CHARON_REMOTE=testremote$' "$svc" \
 grep -q "^Environment=CHARON_NOTIFY=$T/bin/my-notifier\$" "$svc" \
   || fail "notify seam not resolved to an absolute path in the unit"
 
-# 4) the working link -> the cache subtree (~/ expanded)
-[ -L "$T/work-docs" ] || fail "working link not created"
-[ "$(readlink "$T/work-docs")" = "$T/.testremote/Docs" ] \
-  || fail "working link points at the wrong target"
+# 4) charon must lay NO working links: that is the integrator's layout job, and
+# the LINK= key is retired. A stray link here means the key came back.
+[ -e "$T/work-docs" ] \
+  && fail "charon laid a working link; the LINK= key is retired" || :
 
 # 5) check must SEE a hand-patched prf. install and check share one renderer,
 # so a live prf that no longer matches the template this version would generate
@@ -87,4 +87,4 @@ PATH="$T/bin:$PATH" sh "$HERE/bin/charon" sync config >"$T/cfg.out" 2>&1 \
   || fail "config errored with no profiles"
 grep -qi 'none' "$T/cfg.out" || fail "config did not note the empty profile set"
 
-pass "profile config -> prf + timer + service + working link"
+pass "profile config -> prf + timer + service"
