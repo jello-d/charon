@@ -1,5 +1,7 @@
 # Local dev context, never in the public repo.
 CLAUDE.md
+CLAUDE.local.md
+.claude/
 # Editor / build detritus.
 *.swp
 *~
