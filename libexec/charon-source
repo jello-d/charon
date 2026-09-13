@@ -1,0 +1,246 @@
+#!/bin/sh
+#
+# charon-source: manage the SOURCES charon caches -- list them, show what is
+# known about one, and MEASURE its backend traits.
+#
+#   charon source list           the configured sources (+ the implicit default)
+#   charon source show <name>    config, measured traits, and live status
+#   charon source probe <name>   MEASURE the traits and record them
+#   charon source up|down <name> bring the source up / release it
+#
+# WHY MEASURE RATHER THAN DECLARE. A trait is a fact about the backend, not a
+# preference, and getting one wrong is expensive: `fat = true` quietly implies
+# ignorecase, Google Drive is case-SENSITIVE, and that single mismatch exited
+# every media pass on two machines for weeks. Documentation did not settle it;
+# writing CaseTest.txt and casetest.txt to the remote and looking did. So the
+# probe does exactly that, and records what it saw.
+#
+# WHEN IT RUNS. At CONFIG TIME only: `charon sync install` probes a source that
+# has no traits, and this verb re-probes on demand. A sync pass NEVER probes,
+# because a probe WRITES, and per-pass writes to the remote are the churn this
+# project spent a day removing. The prf is DERIVED from traits, so re-probing
+# makes the live prf stale and `charon sync check` reports it -- probe, check,
+# install, green.
+#
+# A FAILED PROBE RECORDS NOTHING. An uncertain measurement is worse than no
+# measurement, because it becomes an assertion nobody re-checks.
+
+: "${LOG_LEVEL:=3}"    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE (environment wins)
+_self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+. "$(dirname "$_self")/common.sh" 2>/dev/null || {
+  echo "charon-source: cannot source common.sh" >&2; exit 1; }
+
+PROFILES_DIR="$CHARON_CONFIG/profiles.d"
+
+usage() {
+  cat <<EOF
+usage: $APP_NAME <list|show|probe|up|down> [source]
+
+  list            configured sources, plus the implicit 'default'
+  show <name>     its config, its measured traits, and whether it is live
+  probe <name>    measure the backend traits and record them (writes!)
+  up <name>       bring the source up
+  down <name>     release it
+EOF
+}
+
+# Every source with a file, plus any the profiles reference (the implicit
+# 'default' has no file, so listing files alone would miss what is in use).
+source_names() {
+  {
+    if [ -d "$CHARON_SOURCES_DIR" ]; then
+      for _f in "$CHARON_SOURCES_DIR"/*.conf; do
+        [ -f "$_f" ] || continue
+        _n=$(basename "$_f"); printf '%s\n' "${_n%.conf}"
+      done
+    fi
+    if [ -d "$PROFILES_DIR" ]; then
+      for _f in "$PROFILES_DIR"/*.conf; do
+        [ -f "$_f" ] || continue
+        _s=$(sed -n 's/^SOURCE=//p' "$_f" | head -1)
+        case "$_s" in
+          "") grep -q '^SUBTREE=' "$_f" && printf 'default\n' || : ;;
+          *:*) printf '%s\n' "${_s%%:*}" ;;
+          *)   printf '%s\n' "$_s" ;;
+        esac
+      done
+    fi
+  } | sort -u
+}
+
+# The provider backing a source. 'none' means something else owns the tree (an
+# fstab entry, an automount, a plain directory): charon will not mount it.
+source_provider() { _p=$(source_get "$1" PROVIDER); printf '%s' "${_p:-none}"; }
+
+#### the probe ####
+# Everything below MEASURES. It writes only inside <mount>/.charon-probe, which
+# is a Tier 0 ignore in every generated profile, so even a failed cleanup can
+# never be mistaken for content and propagated.
+PROBE_DIR_NAME=.charon-probe
+
+probe_case() {   # <dir> -> sensitive | insensitive
+  printf 'upper\n' > "$1/CharonCase.probe" 2>/dev/null || return 1
+  printf 'lower\n' > "$1/charoncase.probe" 2>/dev/null || return 1
+  # Two files differing only in case: if the backend folds case, the second
+  # write landed on the first and there is one file holding 'lower'.
+  if [ "$(cat "$1/CharonCase.probe" 2>/dev/null)" = upper ] \
+     && [ "$(cat "$1/charoncase.probe" 2>/dev/null)" = lower ]; then
+    printf 'sensitive'
+  else
+    printf 'insensitive'
+  fi
+  rm -f "$1/CharonCase.probe" "$1/charoncase.probe" 2>/dev/null || :
+}
+
+probe_times() {   # <dir> -> settable | fixed
+  _f=$1/times.probe
+  : > "$_f" 2>/dev/null || return 1
+  # Compare EPOCH SECONDS, never a formatted date. A formatted comparison is a
+  # timezone bug waiting to happen: `touch -d '2001-02-03 04:05:06'` read the
+  # string as UTC here and stored 2001-02-02 local, so a %Y-%m-%d check called
+  # a perfectly good tmpfs "cannot carry mtimes".
+  # A backend that cannot carry mtimes silently keeps 'now' instead.
+  if touch -d @1000000000 "$_f" 2>/dev/null \
+     && [ "$(stat -c %Y "$_f" 2>/dev/null)" = 1000000000 ]; then
+    printf 'settable'
+  else
+    printf 'fixed'
+  fi
+  rm -f "$_f" 2>/dev/null || :
+}
+
+probe_perms() {   # <dir> -> posix | none
+  _f=$1/perms.probe
+  : > "$_f" 2>/dev/null || return 1
+  chmod 0700 "$_f" 2>/dev/null
+  if [ "$(stat -c %a "$_f" 2>/dev/null)" = 700 ]; then printf 'posix'
+  else printf 'none'; fi
+  rm -f "$_f" 2>/dev/null || :
+}
+
+probe_links() {   # <dir> -> yes | no
+  _l=$1/link.probe
+  rm -f "$_l" 2>/dev/null || :
+  if ln -s target "$_l" 2>/dev/null && [ "$(readlink "$_l")" = target ]; then
+    printf 'yes'
+  else
+    printf 'no'
+  fi
+  rm -f "$_l" 2>/dev/null || :
+}
+
+# Filesystem type, read-only, from the kernel rather than guessed. It is the
+# honest signal for inode stability: a FUSE mount renumbers across remounts,
+# a real POSIX filesystem does not. Measuring stability directly would need a
+# remount, so this is derived and SAID to be derived.
+probe_fstype() { stat -f -c %T "$1" 2>/dev/null || printf 'unknown'; }
+
+do_probe() {   # <source>
+  _src=$1
+  _mnt=$(source_get "$_src" MOUNT)
+  [ -n "$_mnt" ] || { log_error "source '$_src' has no MOUNT"; return 1; }
+  [ -d "$_mnt" ] || { log_error "source '$_src': '$_mnt' is not a directory;"\
+                                "bring it up first"; return 1; }
+
+  _pd=$_mnt/$PROBE_DIR_NAME
+  if ! mkdir -p "$_pd" 2>/dev/null; then
+    # NOT writable. Record that much and nothing else: it is a real, useful
+    # finding (a read-only source cannot support two-way sync at all) and
+    # guessing the rest from a tree we cannot write would be fabrication.
+    log_warn "source '$_src' is NOT WRITABLE at '$_mnt'"
+    log_warn "a read-only source cannot support two-way sync; recording that"
+    _write_traits "$_src" "WRITABLE=no" "FSTYPE=$(probe_fstype "$_mnt")"
+    return 0
+  fi
+
+  log_info "probing source '$_src' at $_mnt ..."
+  _case=$(probe_case  "$_pd") || { _probe_failed "$_src" case;  return 1; }
+  _time=$(probe_times "$_pd") || { _probe_failed "$_src" times; return 1; }
+  _perm=$(probe_perms "$_pd") || { _probe_failed "$_src" perms; return 1; }
+  _link=$(probe_links "$_pd")
+  _fsty=$(probe_fstype "$_mnt")
+  rmdir "$_pd" 2>/dev/null || rm -rf "$_pd" 2>/dev/null || :
+
+  _write_traits "$_src" "WRITABLE=yes" "CASE=$_case" "TIMES=$_time" \
+    "PERMS=$_perm" "LINKS=$_link" "FSTYPE=$_fsty"
+  log_info "source '$_src': case=$_case times=$_time perms=$_perm" \
+           "links=$_link fstype=$_fsty"
+}
+
+_probe_failed() {   # <source> <what>
+  log_error "probe of '$1' failed at the $2 step; recording NOTHING."
+  log_error "an uncertain measurement is worse than none: it becomes an"
+  log_error "assertion nobody re-checks. Fix the source and probe again."
+  rm -rf "$(source_get "$1" MOUNT)/$PROBE_DIR_NAME" 2>/dev/null || :
+}
+
+_write_traits() {   # <source> <KEY=VALUE>...
+  _s=$1; shift
+  mkdir -p "$CHARON_TRAITS_DIR"
+  _tf=$(traits_file "$_s")
+  {
+    echo "# charon source traits for '$_s' -- MEASURED, do not hand-edit."
+    echo "# Re-measure with: charon source probe $_s"
+    echo "# The prf is derived from these, so a re-probe makes the live prf"
+    echo "# stale and 'charon sync check' will say so until install re-renders."
+    echo "PROBED=$(date -Is 2>/dev/null || date)"
+    for _kv in "$@"; do echo "$_kv"; done
+  } > "$_tf"
+  log_info "recorded traits: $_tf"
+}
+
+do_show() {   # <source>
+  _src=$1
+  echo "source '$_src'"
+  echo "  provider:   $(source_provider "$_src")"
+  echo "  mount:      $(source_get "$_src" MOUNT)"
+  echo "  cache root: $(source_get "$_src" CACHE_ROOT)"
+  _r=$(source_get "$_src" REMOTE); [ -n "$_r" ] && echo "  remote:     $_r"
+  if [ -f "$CHARON_SOURCES_DIR/$_src.conf" ]; then
+    echo "  declared:   $CHARON_SOURCES_DIR/$_src.conf"
+  else
+    echo "  declared:   (implicit, derived from CHARON_REMOTE)"
+  fi
+  if traits_present "$_src"; then
+    echo "  traits:     $(traits_file "$_src")"
+    sed -n 's/^\([A-Z_]*\)=/    \1=/p' "$(traits_file "$_src")"
+  else
+    echo "  traits:     NONE -- run: charon source probe $_src"
+  fi
+  _m=$(source_get "$_src" MOUNT)
+  if [ -d "$_m" ] && [ -n "$(ls -A "$_m" 2>/dev/null)" ]; then
+    echo "  live:       yes (non-empty at $_m)"
+  else
+    echo "  live:       NO (missing or empty at $_m)"
+  fi
+}
+
+# up/down delegate to the provider. rclone is in-tree (charon-mount); 'none'
+# means something else owns the tree and charon must keep its hands off it.
+do_updown() {   # <up|down> <source>
+  case "$(source_provider "$2")" in
+    rclone)
+      CHARON_SOURCE=$2 exec "$(dirname "$_self")/charon-mount" \
+        "$([ "$1" = up ] && echo run || echo stop)" ;;
+    none)
+      log_warn "source '$2' has PROVIDER=none: something else owns that tree"
+      log_warn "(fstab, an automount, a plain directory). Nothing to $1." ;;
+    *) log_error "source '$2': unknown PROVIDER"\
+                 "'$(source_provider "$2")'"; return 1 ;;
+  esac
+}
+
+_need() {
+  [ -n "$1" ] && return 0
+  log_error "a source name is required"; usage >&2; exit 2
+}
+
+case "${1:-}" in
+  list)  source_names ;;
+  show)  _need "${2:-}"; do_show "$2" ;;
+  probe) _need "${2:-}"; do_probe "$2" ;;
+  up)    _need "${2:-}"; do_updown up "$2" ;;
+  down)  _need "${2:-}"; do_updown down "$2" ;;
+  ""|-h|--help|help) usage ;;
+  *) log_error "unknown command: $1"; usage >&2; exit 2 ;;
+esac

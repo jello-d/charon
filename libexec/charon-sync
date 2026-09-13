@@ -33,9 +33,10 @@
 # There is deliberately NO working-link key. charon manages a cache; where a
 # desktop surfaces that cache is LAYOUT, which belongs to the integrator.
 #
-# NOTE: PROVIDER is parsed but not yet acted on; the provider seam (up/down/
-# status/health/traits/seed) lands next, and with it the backend TRAITS that
-# currently sit hardcoded in the prf template as cloud-mount assumptions.
+# Backend TRAITS (case sensitivity, whether mtimes stick, permissions,
+# symlinks) are MEASURED per source, not declared, and the prf is DERIVED from
+# them: see `charon source probe`. They are not in the profile because they are
+# facts about what the backend IS, not user preference.
 #
 # charon ships share/charon/example.conf and `setup.sh bootstrap` copies it into
 # an empty profiles.d; an integrator writes its own <name>.conf files.
@@ -329,9 +330,43 @@ install_packages() {
 # it, so "what is installed" and "what this version asserts" cannot drift apart
 # unnoticed. That drift is not hypothetical: three interim hand-patches rode on
 # both boxes' prfs and units at once, and nothing could see them.
+# The backend prefs DERIVED from a source's measured traits. Emitted explicitly,
+# one line per fact, rather than hidden behind unison's `fat` shorthand: `fat`
+# silently bundles ignorecase, Drive is case-SENSITIVE, and that buried
+# component exited every media pass on two machines for weeks. A setting that
+# depends on what the backend IS should be visible and attributable.
+render_prf_traits() {   # <source>
+  printf '# --- derived from measured traits (charon source show %s) ---\n' "$1"
+  case "$(traits_get "$1" CASE)" in
+    insensitive) printf 'ignorecase = true\n' ;;
+    *)           printf 'ignorecase = false\n' ;;
+  esac
+  case "$(traits_get "$1" TIMES)" in
+    fixed) printf '# the backend cannot carry mtimes\ntimes = false\n' ;;
+    *)     printf 'times = true\n' ;;
+  esac
+  if [ "$(traits_get "$1" PERMS)" = none ]; then
+    printf '# no Unix permissions on this backend\nperms = 0\n'
+    printf 'dontchmod = true\n'
+  fi
+  [ "$(traits_get "$1" LINKS)" = no ] && printf 'links = false\n' || :
+  case "$(traits_get "$1" FSTYPE)" in
+    fuse*|*fuse) printf '# %s renumbers inodes across remounts\n' \
+                   "$(traits_get "$1" FSTYPE)"
+                 printf 'ignoreinodenumbers = true\n' ;;
+  esac
+}
+
 render_prf() {   # <profile>
   _src=$(profile_source_name "$1"); [ -n "$_src" ] || return 1
   _sub=$(profile_subtree "$1")
+  # Traits are a RENDER-time input. Refuse to render without them rather than
+  # guess: a guessed backend fact is exactly what cost two machines weeks.
+  if ! traits_present "$_src"; then
+    log_error "source '$_src' has no measured traits; cannot render a profile."
+    log_error "run: ${APP_NAME%% *} source probe $_src"
+    return 1
+  fi
   _mnt=$(source_get "$_src" MOUNT); _cch=$(source_get "$_src" CACHE_ROOT)
   [ -n "$_mnt" ] && [ -n "$_cch" ] || return 1
   _mroot=$_mnt${_sub:+/$_sub}
@@ -361,6 +396,8 @@ render_prf() {   # <profile>
           -e "s|@PREFER_NOTE@|$_note|" \
           -e "s|@PREFER@|$_prefer|"
 
+  render_prf_traits "$_src"
+
   # DELETE=never: a deletion on either replica is not mirrored. The file is
   # restored from the other side on the next pass, since with no deletion to
   # propagate unison sees a one-sided file and copies it back.
@@ -389,6 +426,21 @@ render_prf() {   # <profile>
     printf '# Tier 2 escape hatch, included verbatim and UNSUPPORTED:\n'
     printf 'include charon-%s.prf.local\n' "$1"
   fi
+}
+
+# Probe any source a profile uses that has no traits yet. Install is the
+# CONFIG-TIME moment: it is where the prf is rendered, and traits are that
+# render's input. A sync pass never does this -- a probe writes, and per-pass
+# writes to the remote are the churn we removed.
+ensure_source_traits() {
+  for _p in $(profile_names); do
+    _s=$(profile_source_name "$_p"); [ -n "$_s" ] || continue
+    traits_present "$_s" && continue
+    log_info "source '$_s' has no traits yet; probing (config time, once)"
+    "$(dirname "$_self")/charon-source" probe "$_s" || {
+      log_error "probe of '$_s' failed; its profiles cannot be rendered"; }
+  done
+  return 0
 }
 
 setup_unison_profiles() {
@@ -661,6 +713,7 @@ do_install() {
   check_install_prereqs
   install_packages
   if [ -z "$(profile_names)" ]; then no_profiles_hint; fi
+  ensure_source_traits
   setup_unison_profiles
   setup_systemd_units
 
@@ -821,21 +874,7 @@ label = @LABEL@
 root = @MOUNT_ROOT@
 root = @CACHE_ROOT@
 silent = true
-times = true
 copyonconflict = true
-fat = true
-# fat is right for an rclone FUSE mount in every respect BUT ONE. It bundles
-# perms = 0, dontchmod, links = false and ignoreinodenumbers (all correct: a
-# cloud mount has no Unix permissions, no symlinks, no stable inode numbers)
-# AND ignorecase = true, which is WRONG here. Google Drive is case-SENSITIVE:
-# verified 2026-09-11 by writing CaseTest.txt and casetest.txt to the remote,
-# which coexisted with distinct content. Folding case makes unison REFUSE any
-# path where two names differ only by case ("cannot be synchronized to a file
-# system being treated as case insensitive") and exit 1 for the WHOLE profile,
-# not just that path. One Screenshots/screenshots pair blocked every media pass
-# on both boxes. The manual blesses overriding a single component of fat, so
-# undo exactly the one that does not fit the backend.
-ignorecase = false
 # Unison's own transfer temps are NEVER content. A run killed mid-transfer
 # strands one in the destination dir; with no ignore, the NEXT pass sees it as
 # an ordinary new file and REPLICATES it to the other side -- so a crumb on the
@@ -844,6 +883,7 @@ ignorecase = false
 # independently stranded), 54 MB each way. Ignoring them makes the sync blind to
 # its own litter; sweeping it is an out-of-band job.
 ignore = Name .unison.*.unison.tmp
+ignore = Name .charon-probe
 @PREFER_NOTE@
 prefer = @PREFER@
 confirmbigdel = true

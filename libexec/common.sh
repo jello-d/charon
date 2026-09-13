@@ -28,6 +28,27 @@ CHARON_SOURCE=${CHARON_SOURCE:-default}
 # Read one KEY of a source, literally. The 'default' source is IMPLICIT,
 # synthesized from CHARON_REMOTE, so a single-remote install needs no file at
 # all; writing sources.d/default.conf overrides any key of it.
+# TRAITS are facts about what a source IS, measured rather than declared: is it
+# case-sensitive, do mtimes stick, does it carry Unix permissions and symlinks.
+# They are NOT user preference -- Drive is case-sensitive, SMB and FAT are not,
+# and a wrong guess exits a whole profile. They live in STATE, not cache: a
+# cleared cache must never silently change sync semantics.
+#
+# Read at prf RENDER time only, never during a sync pass. A sync runs an
+# already-generated prf, so a box that upgrades before it probes keeps syncing
+# on its existing profile instead of faulting.
+CHARON_STATE=${CHARON_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/charon}
+CHARON_TRAITS_DIR=${CHARON_TRAITS_DIR:-$CHARON_STATE/traits}
+
+traits_file() { printf '%s/%s' "$CHARON_TRAITS_DIR" "$1"; }
+traits_present() { [ -s "$(traits_file "$1")" ]; }
+
+traits_get() {   # <source> <KEY>
+  _tf=$(traits_file "$1")
+  [ -f "$_tf" ] || return 0
+  sed -n "s/^$2=//p" "$_tf" | head -1
+}
+
 source_get() {   # <source> <KEY>
   _sf=$CHARON_SOURCES_DIR/$1.conf
   _v=

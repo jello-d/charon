@@ -14,6 +14,8 @@ export XDG_CONFIG_HOME=$T/.config
 export CHARON_REMOTE=testremote
 CFG=$XDG_CONFIG_HOME/charon
 mkdir -p "$T/bin" "$CFG/profiles.d" "$CFG/sources.d"
+# source trees must EXIST to be probed (traits are measured, not declared)
+mkdir -p "$T/mnt/nas" "$T/cache/nas" "$T/testremote" "$T/.testremote"
 for s in sudo systemctl systemd-run rclone unison mountpoint; do
   printf '#!/bin/sh\nexit 0\n' > "$T/bin/$s"; chmod +x "$T/bin/$s"
 done
@@ -89,8 +91,10 @@ grep -q '^ignore = Name \*\.tmp$' "$lprf" \
   || fail "a bare pattern should become a Name rule"
 grep -q '^ignore = Path Archive/scratch$' "$lprf" \
   || fail "a pattern with a slash should become a Path rule"
-grep -c '^ignore = ' "$lprf" | grep -qx 3 \
-  || fail "expected 3 ignore lines (2 configured + charon's own temp rule)"
+# 2 configured + charon's two Tier 0 rules (its own transfer temps, and the
+# probe dir, so probe litter can never be mistaken for content either).
+grep -c '^ignore = ' "$lprf" | grep -qx 4 \
+  || fail "expected 4 ignore lines (2 configured + 2 Tier 0)"
 
 # --- Tier 2: a verbatim include, emitted only when the file exists ---
 # unison errors on a missing include, so it must not be emitted unconditionally.

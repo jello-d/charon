@@ -25,6 +25,9 @@ printf '#!/bin/sh\nexec "$@"\n' > "$T/bin/sudo"; chmod +x "$T/bin/sudo"
 
 # a profile using the LEGACY SUBTREE= shorthand, which must keep working: it
 # means "the implicit default source", so an existing install needs no edits.
+# the source tree must EXIST: traits are measured, and you cannot measure
+# a tree that is not there.
+mkdir -p "$T/testremote/Docs" "$T/.testremote"
 mkdir -p "$XDG_CONFIG_HOME/charon/profiles.d"
 cat > "$XDG_CONFIG_HOME/charon/profiles.d/docs.conf" <<'EOF'
 SUBTREE=Docs

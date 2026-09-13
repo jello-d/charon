@@ -2,8 +2,9 @@
 # charon - remote-storage mount + bidirectional sync over rclone. A thin front
 # that dispatches to the mount / sync implementations in ../libexec.
 #
-#   charon mount <run|stop|status|install>
-#   charon sync  <run|seed|seed-full|install|config|check>
+#   charon mount  <run|stop|status|install>
+#   charon sync   <run|seed|seed-full|install|config|check>
+#   charon source <list|show|probe|up|down>
 #   charon --help
 #
 # The mount owns the rclone FUSE mount; sync keeps the local cache in step with
@@ -14,10 +15,11 @@ _lib=$(dirname "$_self")/../libexec
 
 usage() {
   cat <<EOF
-usage: charon <mount|sync> [args...]
+usage: charon <mount|sync|source> [args...]
 
-  charon mount <run|stop|status|install>
-  charon sync  <run|seed|seed-full|install|config|check>
+  charon mount  <run|stop|status|install>
+  charon sync   <run|seed|seed-full|install|config|check>
+  charon source <list|show|probe|up|down>
 
 The mount owns the rclone FUSE mount; sync keeps the local cache in step with
 it (per-subtree profiles in ~/.config/charon/profiles.d). See charon(1).
@@ -25,8 +27,9 @@ EOF
 }
 
 case "${1:-}" in
-  mount) shift; APP_NAME="charon mount" exec "$_lib/charon-mount" "$@" ;;
-  sync)  shift; APP_NAME="charon sync"  exec "$_lib/charon-sync"  "$@" ;;
+  mount)  shift; APP_NAME="charon mount"  exec "$_lib/charon-mount"  "$@" ;;
+  sync)   shift; APP_NAME="charon sync"   exec "$_lib/charon-sync"   "$@" ;;
+  source) shift; APP_NAME="charon source" exec "$_lib/charon-source" "$@" ;;
   ""|-h|--help|help) usage ;;
   *) echo "charon: unknown subcommand '$1'" >&2; usage >&2; exit 2 ;;
 esac

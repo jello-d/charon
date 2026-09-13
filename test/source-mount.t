@@ -13,6 +13,7 @@ export XDG_CONFIG_HOME=$T/.config
 export CHARON_REMOTE=testremote
 CFG=$XDG_CONFIG_HOME/charon
 mkdir -p "$T/bin" "$CFG/profiles.d" "$CFG/sources.d"
+mkdir -p "$T/testremote" "$T/elsewhere/tree" "$T/elsewhere/cache"
 for s in systemctl unison mountpoint systemd-run; do
   printf '#!/bin/sh\nexit 0\n' > "$T/bin/$s"; chmod +x "$T/bin/$s"
 done
