@@ -1,35 +1,85 @@
 #!/bin/sh
-# charon - remote-storage mount + bidirectional sync over rclone. A thin front
-# that dispatches to the mount / sync implementations in ../libexec.
+# charon - a managed local cache for a remote filesystem tree. The cache is what
+# you use; the remote is authority. This is a thin front that dispatches to the
+# implementations in ../libexec.
 #
-#   charon mount  <run|stop|status|install>
-#   charon sync   <run|seed|seed-full|install|config|check>
-#   charon source <list|show|probe|up|down>
-#   charon --help
+#   charon sync   [profile]        reconcile (bidirectional). THE verb.
+#   charon check  [profile]        audit; non-zero on drift
+#   charon status                  sources, profiles, and where things live
+#   charon seed   [--priority]     bulk-populate the cache from the source
+#   charon install | uninstall     provision (or remove) the units
+#   charon source <list|show|probe|up|down> [name]
 #
-# The mount owns the rclone FUSE mount; sync keeps the local cache in step with
-# it (per-subtree profiles in ~/.config/charon/profiles.d). See charon(1).
+# The primary operation is BIDIRECTIONAL, so the headline verb is `sync`, not
+# pull/push. The mount is not a peer of sync: it is how a SOURCE comes to
+# exist, so it lives under `charon source`. Users manage sources; the provider
+# behind one is an implementation detail, not a concept to learn.
+#
+# EVERY OLDER SPELLING STILL WORKS -- `charon sync run <p>`, `charon sync
+# install`, `charon mount <run|stop|status|install>` and the rest are kept as
+# aliases. A generated unit from a previous version must never break because
+# the command was renamed underneath it, and an integrator must be able to
+# migrate on its own schedule.
 set -eu
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
 _lib=$(dirname "$_self")/../libexec
 
 usage() {
   cat <<EOF
-usage: charon <mount|sync|source> [args...]
+usage: charon <command> [args...]
 
-  charon mount  <run|stop|status|install>
-  charon sync   <run|seed|seed-full|install|config|check>
-  charon source <list|show|probe|up|down>
+  sync   [profile]     reconcile the cache with its source (all, or one)
+  check  [profile]     audit; non-zero on drift
+  status               sources, profiles, and the artifacts they generate
+  seed   [--priority]  bulk-populate the cache straight from the source
+  install              install the units, profiles, and timers
+  uninstall            remove them
+  source <list|show|probe|up|down> [name]
+                       manage the trees charon caches; 'probe' MEASURES a
+                       backend's traits (case, mtimes, perms, symlinks)
 
-The mount owns the rclone FUSE mount; sync keeps the local cache in step with
-it (per-subtree profiles in ~/.config/charon/profiles.d). See charon(1).
+Older spellings (charon sync run <p>, charon mount install, ...) still work.
+See charon(1).
 EOF
 }
 
+_sync() { APP_NAME="charon sync" exec "$_lib/charon-sync" "$@"; }
+_mount() { APP_NAME="charon mount" exec "$_lib/charon-mount" "$@"; }
+
+# `charon sync X`: X is a PROFILE in the new surface, but the old surface put a
+# MODE there. Treat the known modes as the legacy form so an old unit, script or
+# muscle-memory keeps working; anything else is a profile name.
+_sync_or_legacy() {
+  case "${1:-}" in
+    run|seed|seed-full|install|config|check) _sync "$@" ;;
+    *) _sync run "$@" ;;
+  esac
+}
+
 case "${1:-}" in
-  mount)  shift; APP_NAME="charon mount"  exec "$_lib/charon-mount"  "$@" ;;
-  sync)   shift; APP_NAME="charon sync"   exec "$_lib/charon-sync"   "$@" ;;
-  source) shift; APP_NAME="charon source" exec "$_lib/charon-source" "$@" ;;
+  # --- the flattened surface ---
+  sync)    shift; _sync_or_legacy "$@" ;;
+  check)   shift; _sync check "$@" ;;
+  status)  shift; _sync config "$@" ;;
+  seed)    shift
+           case "${1:-}" in
+             --priority|-p) _sync seed ;;
+             *) _sync seed-full ;;
+           esac ;;
+  install) shift
+           # BOTH halves: the source has to be up before the sync that uses it
+           # is installed, and an integrator should not have to know that.
+           APP_NAME="charon mount" "$_lib/charon-mount" install || exit $?
+           _sync install ;;
+  uninstall) shift
+           # sync first, then the source it depended on
+           APP_NAME="charon sync" "$_lib/charon-sync" uninstall || exit $?
+           _mount uninstall ;;
+  source)  shift; APP_NAME="charon source" exec "$_lib/charon-source" "$@" ;;
+
+  # --- kept working: the older spellings ---
+  mount)   shift; _mount "$@" ;;
+
   ""|-h|--help|help) usage ;;
-  *) echo "charon: unknown subcommand '$1'" >&2; usage >&2; exit 2 ;;
+  *) echo "charon: unknown command '$1'" >&2; usage >&2; exit 2 ;;
 esac

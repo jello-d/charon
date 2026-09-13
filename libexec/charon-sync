@@ -111,6 +111,7 @@ modes:
   seed          rclone-copy the priority subtrees straight from the remote
   seed-full     rclone-copy the full configured tree into the cache (fast)
   install       install Unison profiles, systemd units/timers, and seed
+  uninstall     remove those units/timers/profiles (NOT the cache or config)
   config        show sources, profiles, and where their artifacts live
   check         check systemd + notify health
 
@@ -828,6 +829,22 @@ check_notify_seam() {
   return 0
 }
 
+# Remove what install created, and NOTHING else. Explicitly NOT the cache and
+# NOT the config: charon manages a cache it did not author, so tearing down the
+# machinery must never touch the data or the declarations that describe it.
+do_uninstall() {
+  log_info "uninstall: removing generated units, timers and profiles"
+  for p in $(profile_names); do
+    _t=charon-sync-$p.timer
+    systemctl --user disable --now "$_t" >/dev/null 2>&1 || :
+    rm -f "$SYSTEMD_USER_DIR/$_t"
+    rm -f "$UNISON_DIR/charon-$p.prf"
+  done
+  rm -f "$SYSTEMD_USER_DIR/charon-sync@.service"
+  systemctl --user daemon-reload >/dev/null 2>&1 || :
+  log_info "uninstall: the cache ($CHARON_CACHE) and config are UNTOUCHED"
+}
+
 do_check() {
   echo "== charon-sync systemd check =="
   _rc=0
@@ -859,6 +876,7 @@ case "$MODE" in
   seed)      seed_subtrees $(priority_subtrees) ;;
   seed-full) seed_full ;;
   install)   do_install ;;
+  uninstall) do_uninstall ;;
   config)    do_config ;;
   check)     do_check ;;
   *)         usage ;;
@@ -905,7 +923,7 @@ Environment=CHARON_NOTIFY=@CHARON_NOTIFY@
 # retries. Not a failure, so an offline laptop does not accumulate failed
 # units; not a success either, which is why check reads ExecMainStatus.
 SuccessExitStatus=75
-ExecStart=%h/.local/bin/charon sync run %i
+ExecStart=%h/.local/bin/charon sync %i
 __SECTION_END__ unit:charon-sync@.service
 
 

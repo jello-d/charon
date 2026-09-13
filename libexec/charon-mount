@@ -28,6 +28,7 @@ usage: $APP_NAME [run|stop|status|install]
   stop      Unmount ${MOUNTPOINT}
   status    Show whether ${MOUNTPOINT} is mounted
   install   Install and enable the systemd --user unit for the mount
+  uninstall Remove that unit (the mountpoint is untouched)
 EOF
 }
 
@@ -253,11 +254,20 @@ do_install() {
 
 # ---- main dispatch ----
 
+do_uninstall() {
+  # The unit only. The mountpoint and everything under it are the user's.
+  systemctl --user disable --now "${SYSTEMD_UNIT}.service" >/dev/null 2>&1 || :
+  rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${SYSTEMD_UNIT}.service"
+  systemctl --user daemon-reload >/dev/null 2>&1 || :
+  log_info "removed the ${SYSTEMD_UNIT} unit; $MOUNTPOINT is untouched"
+}
+
 case "$1" in
   run)     shift; do_mount "$@" ;;
   stop)    do_unmount ;;
   status)  do_status ;;
-  install) do_install ;;
+  install)   do_install ;;
+  uninstall) do_uninstall ;;
   ""|help|-h|--help) usage ;;
   *)
     log_error "unknown command: $1"
@@ -280,8 +290,8 @@ Environment=CHARON_SOURCE=@CHARON_SOURCE@
 Environment=CHARON_REMOTE=@CHARON_REMOTE@
 Environment=CHARON_MOUNT=@CHARON_MOUNT@
 Environment=RCLONE_CONFIG=%h/.config/rclone/rclone.conf
-ExecStart=%h/.local/bin/charon mount run
-ExecStop=%h/.local/bin/charon mount stop
+ExecStart=%h/.local/bin/charon source up @CHARON_SOURCE@
+ExecStop=%h/.local/bin/charon source down @CHARON_SOURCE@
 Restart=on-failure
 RestartSec=10
 
