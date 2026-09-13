@@ -87,4 +87,28 @@ _charon source probe gone >/dev/null 2>&1 \
 [ -e "$T/.local/state/charon/traits/gone" ] \
   && fail "a FAILED probe recorded traits anyway" || :
 
+# --- EVERY generated artifact must be diffed, not merely looked for ---
+# Only the prf was, for a while: a hand-edited charon-mount.service passed
+# check completely unnoticed. A generated file nothing diffs is invisible
+# drift, which is the same lesson the prf taught the hard way.
+_charon install >/dev/null 2>&1
+SD=$XDG_CONFIG_HOME/systemd/user
+for g in "$SD/charon-mount.service" "$SD/charon-sync@.service" \
+         "$SD/charon-sync-docs.timer" "$T/.unison/charon-docs.prf"; do
+  [ -f "$g" ] || fail "expected generated artifact missing: $g"
+  cp "$g" "$T/g.bak"
+  printf '# sneaky hand edit\n' >> "$g"
+  _charon check >/dev/null 2>&1 \
+    && fail "check is BLIND to a hand edit of $(basename "$g")" || :
+  cp "$T/g.bak" "$g"
+done
+# (not asserting check's exit: the stubbed systemctl reports no registered
+# unit files, so it is non-zero in the sandbox for unrelated reasons)
+_charon check >"$T/gen.out" 2>&1 || :
+for want in charon-mount.service charon-sync@.service \
+            charon-sync-docs.timer charon-docs.prf; do
+  grep -q "\[OK\].*$want matches" "$T/gen.out" \
+    || fail "$want not reported as matching after restore"
+done
+
 pass "traits measured, derived, re-probed, and never guessed"

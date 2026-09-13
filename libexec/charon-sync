@@ -475,6 +475,41 @@ setup_unison_profiles() {
   done
 }
 
+# The units this version WOULD write, on stdout. ONE renderer each, used by
+# install to write them and by check to diff the live ones against them. A
+# generated file that nothing diffs is invisible drift: that lesson cost a day
+# on the prf, and the units had exactly the same blind spot until now. A
+# hand-edited charon-mount.service went completely unnoticed by check.
+render_sync_unit() {   # <resolved-notify-path>
+  extract_section "unit:charon-sync@.service" \
+    | sed -e "s|@CHARON_REMOTE@|$CHARON_REMOTE|g" \
+          -e "s|@CHARON_NOTIFY@|$1|g"
+}
+
+render_timer() {   # <profile>
+  _iv=$(profile_get "$1" INTERVAL); _bt=$(profile_get "$1" BOOT)
+  _jt=$(profile_get "$1" JITTER)
+  extract_section "timer:charon-sync.timer" \
+    | sed -e "s|@NAME@|$1|g" \
+          -e "s|@INTERVAL@|${_iv:-30m}|g" \
+          -e "s|@BOOT@|${_bt:-10m}|g" \
+          -e "s|@JITTER@|${_jt:-2m}|g"
+}
+
+# Diff one generated artifact against what this version would write.
+# 0 matches / 1 drifted-or-missing. Prints its own marker line.
+check_generated() {   # <label> <live-file> <rendered-tmp>
+  if [ ! -f "$2" ]; then
+    echo "  [FAIL] $1 missing (run '${APP_NAME} install')"; return 1
+  fi
+  if diff -q "$3" "$2" >/dev/null 2>&1; then
+    echo "  [OK]   $1 matches this version's template"; return 0
+  fi
+  echo "  [FAIL] $1 DIFFERS from this version's template (hand-edited, or a"\
+       "stale install); run '${APP_NAME} install'"
+  return 1
+}
+
 setup_systemd_units() {
   log_info "setting up systemd user units in $SYSTEMD_USER_DIR"
   mkdir -p "$SYSTEMD_USER_DIR"
@@ -501,20 +536,10 @@ setup_systemd_units() {
                   "baking as-is, but a --user unit will NOT resolve it"
        fi ;;
   esac
-  extract_section "unit:charon-sync@.service" \
-    | sed -e "s|@CHARON_REMOTE@|$CHARON_REMOTE|g" \
-          -e "s|@CHARON_NOTIFY@|$_notify|g" \
-    >"$SYSTEMD_USER_DIR/charon-sync@.service"
+  render_sync_unit "$_notify" >"$SYSTEMD_USER_DIR/charon-sync@.service"
 
   for p in $(profile_names); do
-    _iv=$(profile_get "$p" INTERVAL); _bt=$(profile_get "$p" BOOT)
-    _jt=$(profile_get "$p" JITTER)
-    extract_section "timer:charon-sync.timer" \
-      | sed -e "s|@NAME@|$p|g" \
-            -e "s|@INTERVAL@|${_iv:-30m}|g" \
-            -e "s|@BOOT@|${_bt:-10m}|g" \
-            -e "s|@JITTER@|${_jt:-2m}|g" \
-      >"$SYSTEMD_USER_DIR/charon-sync-$p.timer"
+    render_timer "$p" >"$SYSTEMD_USER_DIR/charon-sync-$p.timer"
   done
 
   log_trace "reloading systemd user daemon"
@@ -754,12 +779,18 @@ do_install() {
 # was doing four unrelated audits.
 check_service_template() {
   _r=0
-  if [ -f "$SYSTEMD_USER_DIR/charon-sync@.service" ]; then
-    echo "  [OK]   service template installed"
-  else
-    echo "  [FAIL] charon-sync@.service missing (run '${APP_NAME} install')"
-    _r=1
-  fi
+  # DIFF it, do not merely look for it. Re-render with the notify path the unit
+  # itself carries: that value is install-time INTEGRATOR policy and cannot be
+  # re-derived from charon's own config, so assuming this shell's CHARON_NOTIFY
+  # would report a correct unit as drift. Whether that baked path actually
+  # resolves is audited separately, by check_notify_seam.
+  _bn=$(sed -n 's/^Environment=CHARON_NOTIFY=//p' \
+          "$SYSTEMD_USER_DIR/charon-sync@.service" 2>/dev/null | head -1)
+  _rt=${TMPDIR:-/tmp}/charon-unit-render.$$
+  render_sync_unit "$_bn" >"$_rt"
+  check_generated "charon-sync@.service" \
+    "$SYSTEMD_USER_DIR/charon-sync@.service" "$_rt" || _r=1
+  rm -f "$_rt"
   if systemctl --user list-unit-files 2>/dev/null \
        | grep -q '^charon-sync@\.service'; then
     echo "  [OK]   charon-sync@.service registered"
@@ -781,6 +812,10 @@ check_profile_health() {   # <profile>
   if systemctl --user is-active "$_t" >/dev/null 2>&1; then
     echo "  [OK]   $_t active"
   else echo "  [WARN] $_t not active"; fi
+  _tt=${TMPDIR:-/tmp}/charon-timer-render.$$.$1
+  render_timer "$1" >"$_tt"
+  check_generated "$_t" "$SYSTEMD_USER_DIR/$_t" "$_tt" || _r=1
+  rm -f "$_tt"
 
   # PRESENCE IS NOT FUNCTION. An enabled, active timer whose service fails
   # every single pass looks perfectly healthy to a presence check, which is how

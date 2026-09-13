@@ -59,7 +59,13 @@ _sync_or_legacy() {
 case "${1:-}" in
   # --- the flattened surface ---
   sync)    shift; _sync_or_legacy "$@" ;;
-  check)   shift; _sync check "$@" ;;
+  check)   shift
+           # BOTH halves, and the worst verdict wins. The mount unit is a
+           # generated artifact too, and for a long time nothing diffed it.
+           _rc=0
+           APP_NAME="charon sync" "$_lib/charon-sync" check "$@" || _rc=$?
+           APP_NAME="charon mount" "$_lib/charon-mount" check || _rc=$?
+           exit $_rc ;;
   status)  shift; _sync config "$@" ;;
   seed)    shift
            case "${1:-}" in

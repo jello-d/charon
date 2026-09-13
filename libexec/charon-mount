@@ -29,6 +29,7 @@ usage: $APP_NAME [run|stop|status|install]
   status    Show whether ${MOUNTPOINT} is mounted
   install   Install and enable the systemd --user unit for the mount
   uninstall Remove that unit (the mountpoint is untouched)
+  check     Diff the installed unit against this version's template
 EOF
 }
 
@@ -205,10 +206,66 @@ do_unmount() {
 extract_block() {
   START_MARK="$1"
   END_MARK="$2"
-  OUTFILE="$3"
 
   awk "/^${START_MARK}\$/ {flag=1; next} /^${END_MARK}\$/ {flag=0} flag" \
-    "$_self" >"$OUTFILE"
+    "$_self"
+}
+
+# The unit this version WOULD write, on stdout. ONE renderer, used by install to
+# write it and by check to diff the live one against it. A generated file that
+# nothing diffs is invisible drift -- the lesson the prf already taught: three
+# hand-patches rode on two boxes for a day because install wrote the prf and
+# check never looked at it. The units had exactly the same blind spot.
+render_unit() {
+  extract_block "#-----BEGIN-SYSTEMD-UNIT-CHARON-MOUNT-----" \
+                "#-----END-SYSTEMD-UNIT-CHARON-MOUNT-----" \
+    | sed -e "s|@CHARON_SOURCE@|$CHARON_SOURCE|g" \
+          -e "s|@CHARON_REMOTE@|$REMOTE_NAME|g" \
+          -e "s|@CHARON_MOUNT@|$MOUNTPOINT|g"
+}
+
+_sd=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+UNIT_FILE="$_sd/${SYSTEMD_UNIT}.service"
+
+do_check() {
+  echo "== charon-mount unit check =="
+  _r=0
+  if [ ! -f "$UNIT_FILE" ]; then
+    echo "  [FAIL] ${SYSTEMD_UNIT}.service missing (run '${APP_NAME} install')"
+    return 1
+  fi
+  # Re-render for the source the unit was INSTALLED for, read from the unit
+  # itself, not this shell's CHARON_SOURCE. The checker cannot know which
+  # source an integrator installed for, and assuming the default reports a
+  # perfectly correct unit as drift (it did, the first time this ran). Same
+  # reasoning as reading the baked notify path rather than the caller's env.
+  _baked=$(sed -n 's/^Environment=CHARON_SOURCE=//p' "$UNIT_FILE" | head -1)
+  if [ -n "$_baked" ]; then
+    CHARON_SOURCE=$_baked
+    REMOTE_NAME=$(source_get "$CHARON_SOURCE" REMOTE)
+    MOUNTPOINT=$(source_get "$CHARON_SOURCE" MOUNT)
+    if [ -z "$MOUNTPOINT" ]; then
+      echo "  [FAIL] the unit names source '$_baked', which is not defined"
+      return 1
+    fi
+    echo "  [OK]   unit is installed for source '$_baked'"
+  fi
+  _rt=${TMPDIR:-/tmp}/charon-mount-render.$$
+  render_unit >"$_rt"
+  if diff -q "$_rt" "$UNIT_FILE" >/dev/null 2>&1; then
+    echo "  [OK]   ${SYSTEMD_UNIT}.service matches this version's template"
+  else
+    echo "  [FAIL] ${SYSTEMD_UNIT}.service DIFFERS from this version's"\
+         "template (hand-edited, or stale); run '${APP_NAME} install'"
+    _r=1
+  fi
+  rm -f "$_rt"
+  if systemctl --user is-active "${SYSTEMD_UNIT}.service" >/dev/null 2>&1; then
+    echo "  [OK]   ${SYSTEMD_UNIT}.service active"
+  else
+    echo "  [FAIL] ${SYSTEMD_UNIT}.service not active"; _r=1
+  fi
+  return $_r
 }
 
 do_install() {
@@ -232,14 +289,7 @@ do_install() {
   # Bake the resolved remote + mountpoint into the unit's Environment, so the
   # --user unit (which runs with no shell env) uses the same remote this install
   # resolved -- a non-default CHARON_REMOTE then "just works" with no injection.
-  extract_block "#-----BEGIN-SYSTEMD-UNIT-CHARON-MOUNT-----" \
-                "#-----END-SYSTEMD-UNIT-CHARON-MOUNT-----" \
-                "$UNIT_PATH"
-  sed -i \
-    -e "s|@CHARON_SOURCE@|$CHARON_SOURCE|g" \
-    -e "s|@CHARON_REMOTE@|$REMOTE_NAME|g" \
-    -e "s|@CHARON_MOUNT@|$MOUNTPOINT|g" \
-    "$UNIT_PATH"
+  render_unit >"$UNIT_PATH"
 
   log_info "installed systemd unit: $UNIT_PATH"
 
@@ -268,6 +318,7 @@ case "$1" in
   status)  do_status ;;
   install)   do_install ;;
   uninstall) do_uninstall ;;
+  check)     do_check; exit $? ;;
   ""|help|-h|--help) usage ;;
   *)
     log_error "unknown command: $1"
