@@ -359,17 +359,32 @@ render_prf_traits() {   # <source>
 }
 
 render_prf() {   # <profile>
-  _src=$(profile_source_name "$1"); [ -n "$_src" ] || return 1
+  _src=$(profile_source_name "$1")
+  if [ -z "$_src" ]; then
+    log_error "profile '$1' names no source (set SOURCE=, or the legacy"\
+              "SUBTREE=)"
+    return 1
+  fi
   _sub=$(profile_subtree "$1")
+
+  # Resolve the SOURCE before anything else, so an undefined one is reported as
+  # undefined. Checking traits first says "source X has no traits" about a
+  # source that does not exist, which sends the reader off to probe nothing.
+  _mnt=$(source_get "$_src" MOUNT); _cch=$(source_get "$_src" CACHE_ROOT)
+  if [ -z "$_mnt" ] || [ -z "$_cch" ]; then
+    log_error "profile '$1' names source '$_src', which is not defined:"\
+              "no $CHARON_SOURCES_DIR/$_src.conf, and it is not the implicit"\
+              "'default'."
+    return 1
+  fi
+
   # Traits are a RENDER-time input. Refuse to render without them rather than
   # guess: a guessed backend fact is exactly what cost two machines weeks.
   if ! traits_present "$_src"; then
     log_error "source '$_src' has no measured traits; cannot render a profile."
-    log_error "run: ${APP_NAME%% *} source probe $_src"
+    log_error "run: charon source probe $_src"
     return 1
   fi
-  _mnt=$(source_get "$_src" MOUNT); _cch=$(source_get "$_src" CACHE_ROOT)
-  [ -n "$_mnt" ] && [ -n "$_cch" ] || return 1
   _mroot=$_mnt${_sub:+/$_sub}
   _croot=$_cch${_sub:+/$_sub}
   _label="charon $(source_get "$_src" REMOTE):$_sub"
@@ -792,16 +807,29 @@ check_profile_health() {   # <profile>
   # one left behind by a stale clone, is otherwise invisible: the running code
   # can carry a fix the live prf does not, and the sync quietly keeps using the
   # old policy. Three such patches rode on both boxes at once, unseen.
+  # Render to a TEMP FILE, not a pipe: the comparison stays byte-exact, and a
+  # render FAILURE becomes distinguishable from a mismatch. Reporting an
+  # unresolvable source as "hand-patched, or a stale install" sends the reader
+  # hunting for an edit that does not exist -- which is exactly what happened
+  # mid-migration, when profiles named a source whose definition was not
+  # published yet.
   _prf=$UNISON_DIR/charon-$1.prf
+  _rt=${TMPDIR:-/tmp}/charon-render.$$.$1
   if [ ! -f "$_prf" ]; then
     echo "  [FAIL] $_prf missing (run '${APP_NAME} install')"; _r=1
-  elif render_prf "$1" | diff -q - "$_prf" >/dev/null 2>&1; then
+  elif ! render_prf "$1" >"$_rt" 2>"$_rt.err"; then
+    echo "  [FAIL] charon-$1.prf cannot be RE-RENDERED, so it cannot be"\
+         "checked. The profile or its source is unresolvable:"
+    sed 's/^/           /' "$_rt.err" | head -3
+    _r=1
+  elif diff -q "$_rt" "$_prf" >/dev/null 2>&1; then
     echo "  [OK]   charon-$1.prf matches this version's template"
   else
     echo "  [FAIL] charon-$1.prf DIFFERS from this version's template"\
          "(hand-patched, or a stale install); run '${APP_NAME} install'"
     _r=1
   fi
+  rm -f "$_rt" "$_rt.err"
   return $_r
 }
 
