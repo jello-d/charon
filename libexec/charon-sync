@@ -63,7 +63,6 @@ RCLONE_BIN="${RCLONE_BIN:-rclone}"
 UNISON_DIR="${UNISON_DIR:-$HOME/.unison}"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 PROFILES_DIR="$CHARON_CONFIG/profiles.d"
-SOURCES_DIR="$CHARON_CONFIG/sources.d"
 EXAMPLE_CONF="$(dirname "$_self")/../share/charon/example.conf"
 
 LOCKDIR="$HOME/.cache"
@@ -155,8 +154,8 @@ profile_get_all() {   # <name> <KEY>
 # file on disk).
 source_names() {
   {
-    if [ -d "$SOURCES_DIR" ]; then
-      for _f in "$SOURCES_DIR"/*.conf; do
+    if [ -d "$CHARON_SOURCES_DIR" ]; then
+      for _f in "$CHARON_SOURCES_DIR"/*.conf; do
         [ -f "$_f" ] || continue
         _n=$(basename "$_f"); printf '%s\n' "${_n%.conf}"
       done
@@ -176,25 +175,6 @@ source_names() {
 # ONE fact, and storing it per profile would let two profiles disagree about
 # the same mount.
 #
-# The 'default' source is IMPLICIT, synthesized from CHARON_REMOTE, so a
-# single-remote install needs no sources.d file at all and a profile can keep
-# saying SUBTREE=Documents. Writing sources.d/default.conf overrides it.
-source_get() {   # <source> <KEY>
-  _sf=$SOURCES_DIR/$1.conf
-  _v=
-  [ -f "$_sf" ] && _v=$(sed -n "s/^$2=//p" "$_sf" | head -1)
-  if [ -z "$_v" ] && [ "$1" = default ]; then
-    case "$2" in
-      MOUNT)      _v=$CHARON_MOUNT ;;
-      CACHE_ROOT) _v=$CHARON_CACHE ;;
-      REMOTE)     _v=$CHARON_REMOTE ;;
-      PROVIDER)   _v=rclone ;;
-    esac
-  fi
-  case "$_v" in "~/"*) _v="$HOME/${_v#"~/"}" ;; esac
-  printf '%s' "$_v"
-}
-
 # Which source a profile reconciles against. SOURCE=<name>:<subtree>, or the
 # legacy SUBTREE=<subtree> shorthand meaning the implicit default source.
 profile_source_name() {   # <profile>
@@ -656,7 +636,7 @@ run_with_lock() {
 
 #### higher-level operations ####
 do_config() {
-  echo "sources dir:  $SOURCES_DIR"
+  echo "sources dir:  $CHARON_SOURCES_DIR"
   for s in $(source_names); do
     echo "  source '$s': mount=$(source_get "$s" MOUNT)" \
          "cache=$(source_get "$s" CACHE_ROOT)"

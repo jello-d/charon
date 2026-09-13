@@ -15,6 +15,36 @@ CHARON_MOUNT=${CHARON_MOUNT:-$HOME/$CHARON_REMOTE}    # live FUSE mountpoint
 CHARON_CACHE=${CHARON_CACHE:-$HOME/.$CHARON_REMOTE}   # local sync cache (fast)
 CHARON_CONFIG=${CHARON_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/charon}
 
+# A SOURCE is one tree to cache plus how it comes to exist. It lives HERE, in
+# the shared preamble, because BOTH impls must resolve it identically: the
+# mount brings a source up and the sync reconciles it, and if each derived its
+# own idea of "which remote, at which path" they could disagree. That is not
+# hypothetical -- until this moved here, charon-mount read CHARON_REMOTE
+# directly while charon-sync resolved a source, which is exactly why an
+# integrator could not safely declare a source at all.
+CHARON_SOURCES_DIR=${CHARON_SOURCES_DIR:-$CHARON_CONFIG/sources.d}
+CHARON_SOURCE=${CHARON_SOURCE:-default}
+
+# Read one KEY of a source, literally. The 'default' source is IMPLICIT,
+# synthesized from CHARON_REMOTE, so a single-remote install needs no file at
+# all; writing sources.d/default.conf overrides any key of it.
+source_get() {   # <source> <KEY>
+  _sf=$CHARON_SOURCES_DIR/$1.conf
+  _v=
+  [ -f "$_sf" ] && _v=$(sed -n "s/^$2=//p" "$_sf" | head -1)
+  if [ -z "$_v" ] && [ "$1" = default ]; then
+    case "$2" in
+      MOUNT)      _v=$CHARON_MOUNT ;;
+      CACHE_ROOT) _v=$CHARON_CACHE ;;
+      REMOTE)     _v=$CHARON_REMOTE ;;
+      PROVIDER)   _v=rclone ;;
+    esac
+  fi
+  # quote the pattern so the shell does not tilde-EXPAND it (see profile_get)
+  case "$_v" in "~/"*) _v="$HOME/${_v#"~/"}" ;; esac
+  printf '%s' "$_v"
+}
+
 : "${APP_NAME:=$(basename "$0")}"
 : "${LOG_LEVEL:=3}"                    # 1=ERROR 2=WARN 3=INFO 4=TRACE
 
