@@ -606,8 +606,14 @@ seed_full() {
   seed_subtrees $_subs
   _rc=$?
   flock -u 9 2>/dev/null; exec 9>&-       # release BEFORE kicking Unison
+  # Kick the profiles ONE AT A TIME, and WAIT for each. All profiles share a
+  # single sync lock (overlapping unison runs would contend on the mount and on
+  # each other's archives), so starting them all with --no-block guaranteed
+  # that every profile after the first hit the lock and recorded a SKIPPED run.
+  # That made an install reliably leave a spurious warning behind, and a
+  # warning you see after every install is a warning you stop reading.
   for p in $(profile_names); do
-    systemctl --user start --no-block "charon-sync@$p.service" || true
+    systemctl --user start "charon-sync@$p.service" || true
   done
   log_info "seed-full: bulk seed finished (rc $_rc); unison reconcile kicked"
   return "$_rc"
@@ -888,7 +894,14 @@ check_notify_seam() {
     return 1
   fi
   echo "  [OK]   notify seam reachable from a unit: $_baked"
-  echo; echo "== notify ($_baked) =="; "$_baked" list 2>/dev/null || true
+  # List CHARON's flags, not every flag on the box. The seam is shared with
+  # whatever else an integrator wires into it, and printing another
+  # subsystem's pending flag inside charon's own check reads as though charon
+  # raised it.
+  echo; echo "== notify ($_baked): charon flags =="
+  _nl=$("$_baked" list 2>/dev/null | grep -i charon || true)
+  if [ -n "$_nl" ]; then printf '%s\n' "$_nl"
+  else echo "  (none)"; fi
   return 0
 }
 
