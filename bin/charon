@@ -73,9 +73,27 @@ case "${1:-}" in
              *) _sync seed-full ;;
            esac ;;
   install) shift
-           # BOTH halves: the source has to be up before the sync that uses it
-           # is installed, and an integrator should not have to know that.
-           APP_NAME="charon mount" "$_lib/charon-mount" install || exit $?
+           # The MOUNT half only for sources charon actually mounts. It used to
+           # run unconditionally, so a setup whose only source is PROVIDER=none
+           # (someone else's tree) still tried to ensure an rclone remote and
+           # failed on a box that has none. The source has to be up before the
+           # sync that uses it is installed, and an integrator should not have
+           # to know that, which is why both still happen here.
+           _first=
+           for _s in $("$_lib/charon-source" list); do
+             [ "$("$_lib/charon-source" provider "$_s")" = rclone ] || continue
+             if [ -n "$_first" ]; then
+               echo "charon: NOTE source '$_s' is also rclone-backed, but" >&2
+               echo "        one mount unit exists today, installed for" >&2
+               echo "        '$_first'; multi-remote mounts are not built." >&2
+               continue
+             fi
+             _first=$_s
+             CHARON_SOURCE=$_s APP_NAME="charon mount" \
+               "$_lib/charon-mount" install || exit $?
+           done
+           [ -n "$_first" ] \
+             || echo "charon: no rclone-backed source; nothing to mount"
            _sync install ;;
   uninstall) shift
            # sync first, then the source it depended on

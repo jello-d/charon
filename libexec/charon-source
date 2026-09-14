@@ -34,11 +34,15 @@ PROFILES_DIR="$CHARON_CONFIG/profiles.d"
 
 usage() {
   cat <<EOF
-usage: $APP_NAME <list|show|probe|up|down> [source]
+usage: $APP_NAME <list|show|probe|status|health|seed|up|down> [source]
 
   list            configured sources, plus the implicit 'default'
+  provider <name> print which provider backs it
   show <name>     its config, its measured traits, and whether it is live
   probe <name>    measure the backend traits and record them (writes!)
+  status <name>   is it available right now?  0 up / 1 down
+  health <name>   deep probe:  0 online / 2 offline / 3 throttled
+  seed <name> <subtree> <dest>   bulk-populate, if the provider can
   up <name>       bring the source up
   down <name>     release it
 EOF
@@ -71,6 +75,83 @@ source_names() {
 # The provider backing a source. 'none' means something else owns the tree (an
 # fstab entry, an automount, a plain directory): charon will not mount it.
 source_provider() { _p=$(source_get "$1" PROVIDER); printf '%s' "${_p:-none}"; }
+
+#### the provider seam ####
+# Everything that knows HOW a source is realised lives here. charon-sync asks
+# these questions and never learns the answer's shape: that is the difference
+# between a seam existing and a seam working. Before this, the sync probed
+# `rclone about <global remote>:` unconditionally, so a PROVIDER=none source
+# (an fstab entry, an automount, a plain directory) was reported offline on
+# every pass and skipped forever, while the docs claimed it still reconciled.
+
+RCLONE_BIN="${RCLONE_BIN:-rclone}"
+
+# Is the source available to be read right now?  0 up / 1 down.
+do_status() {   # <source>
+  _m=$(source_get "$1" MOUNT)
+  [ -n "$_m" ] || { log_error "source '$1' has no MOUNT"; return 1; }
+  case "$(source_provider "$1")" in
+    rclone)
+      # charon mounted it, so it MUST still be a mountpoint. A plain directory
+      # where a mount should be is the dead-mount case, not an ordinary dir.
+      if command -v mountpoint >/dev/null 2>&1; then
+        mountpoint -q "$_m"; return $?
+      fi
+      mount | grep -q "on $_m "; return $? ;;
+    *)
+      # Something else owns the tree. It is NOT required to be a mountpoint --
+      # a plain directory is a legitimate BYO source -- so existence is the
+      # test, and check_source_sane covers the dangerous empty case.
+      [ -d "$_m" ] ;;
+  esac
+}
+
+# Deep health, tri-state, because a transient throttle must never be
+# mislabelled offline and turned into a fault:  0 online / 2 offline / 3 busy.
+do_health() {   # <source>
+  case "$(source_provider "$1")" in
+    rclone)
+      _r=$(source_get "$1" REMOTE)
+      if [ -z "$_r" ]; then
+        log_error "source '$1' has PROVIDER=rclone but no REMOTE"; return 2
+      fi
+      _o=$("$RCLONE_BIN" about "${_r}:" --contimeout 5s --timeout 15s \
+             --retries 1 --low-level-retries 1 2>&1) \
+        && { echo online; return 0; }
+      case "$_o" in
+        *rateLimitExceeded*|*userRateLimitExceeded*|*quotaExceeded*|\
+        *"Quota exceeded"*|*"Error 403"*|*"Error 429"*)
+          echo throttled; return 3 ;;
+      esac
+      echo offline; return 2 ;;
+    *)
+      # No API to ask. The generic answer is the honest one: the tree is either
+      # readable or it is not.
+      do_status "$1" && { echo online; return 0; }
+      echo offline; return 2 ;;
+  esac
+}
+
+# Bulk-populate <dest> from <subtree> of the source, when the provider can do
+# it far faster than the reconciler would. Optional by contract: a provider
+# that cannot is NOT a failure, because seeding is an optimisation.
+do_seed() {   # <source> <subtree> <dest>
+  case "$(source_provider "$1")" in
+    rclone)
+      _r=$(source_get "$1" REMOTE)
+      command -v "$RCLONE_BIN" >/dev/null 2>&1 || {
+        log_error "'$RCLONE_BIN' not found; cannot seed"; return 1; }
+      mkdir -p "$3"
+      log_info "seeding $2 (rclone copy, resumable) -> $3"
+      "$RCLONE_BIN" copy "${_r}:$2" "$3" \
+        --transfers 4 --checkers 8 --fast-list \
+        --contimeout 15s --timeout 60s --retries 3 --low-level-retries 20 ;;
+    *)
+      log_info "source '$1' has PROVIDER=none: no bulk seed available, so the"\
+               "reconciler will populate '$2' on its first pass"
+      return 0 ;;
+  esac
+}
 
 #### the probe ####
 # Everything below MEASURES. It writes only inside <mount>/.charon-probe, which
@@ -236,7 +317,11 @@ _need() {
 }
 
 case "${1:-}" in
-  list)  source_names ;;
+  list)     source_names ;;
+  provider) _need "${2:-}"; source_provider "$2"; echo ;;
+  status) _need "${2:-}"; do_status "$2" ;;
+  health) _need "${2:-}"; do_health "$2" ;;
+  seed)   _need "${2:-}"; do_seed "$2" "${3:-}" "${4:-}" ;;
   show)  _need "${2:-}"; do_show "$2" ;;
   probe) _need "${2:-}"; do_probe "$2" ;;
   up)    _need "${2:-}"; do_updown up "$2" ;;

@@ -1,15 +1,17 @@
 #!/bin/sh
 #
-# charon-sync: keep a local cache (~/.<remote>) in step with the live rclone
-# FUSE mount (~/<remote>) using Unison. The mount is canonical; the cache is the
-# fast, offline-usable copy that working dirs read from (FUSE reads are slow).
+# charon-sync: keep a local cache in step with its SOURCE using Unison. The
+# source is canonical; the cache is the fast, offline-usable copy that working
+# dirs read from. How a source is realised (an rclone FUSE mount, an fstab
+# entry, a plain directory) is the PROVIDER's business, asked through
+# charon-source: this half never learns the answer's shape.
 #
 # CONFIG IS DATA, in two kinds, both KEY=VALUE and read literally.
 #
 # A SOURCE (sources.d/<name>.conf) is one tree to cache, and how it exists:
 #   MOUNT=~/gdrive              the source root
 #   CACHE_ROOT=~/.gdrive        the local cache root
-#   PROVIDER=rclone             reserved; who brings the source up (see NOTE)
+#   PROVIDER=rclone             who brings the source up: rclone, or none
 #   REMOTE=gdrive               provider config (rclone remote name)
 # The 'default' source is IMPLICIT, synthesized from CHARON_REMOTE, so a
 # single-remote install needs NO sources.d file at all.
@@ -18,7 +20,7 @@
 # policy for it:
 #   SOURCE=gdrive:Media         <source>:<subtree>  (or the legacy SUBTREE=)
 #   INTERVAL=30m BOOT=12m JITTER=5m   unison timer cadence
-#   SEED_PRIORITY=Media/Images/wallpaper  rclone-seeded FIRST, at install
+#   SEED_PRIORITY=Media/Images/wallpaper  bulk-seeded FIRST, at install
 #   SEED_FULL_ORDER=20          join the background full seed, ascending
 #   -- the three TIER 1 policy knobs, charon's own vocabulary: --
 #   IGNORE=*.tmp                exclude; repeatable. A value with '/' is a path
@@ -44,8 +46,8 @@
 # Usage (via the `charon` front, or run this impl directly):
 #   charon sync                  # same as 'run' (sync all profiles)
 #   charon sync run [profile]    # sync one profile, or all (default)
-#   charon sync seed             # rclone-copy the priority subtrees now
-#   charon sync seed-full        # rclone-copy the full configured tree, fast
+#   charon sync seed             # bulk-seed the priority subtrees now
+#   charon sync seed-full        # bulk-seed the full configured tree, fast
 #   charon sync install          # profiles, units/timers, and the seed
 #   charon sync config           # show sources, profiles, and artifacts
 #   charon sync check            # systemd + notify health
@@ -60,7 +62,6 @@ _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
 . "$(dirname "$_self")/common.sh" 2>/dev/null || {
   echo "charon-sync: cannot source common.sh" >&2; exit 1; }
 
-RCLONE_BIN="${RCLONE_BIN:-rclone}"
 UNISON_DIR="${UNISON_DIR:-$HOME/.unison}"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 PROFILES_DIR="$CHARON_CONFIG/profiles.d"
@@ -108,8 +109,8 @@ usage:  ${APP_NAME} [mode] [profile]
 modes:
   (none)        same as 'run' (sync all configured profiles)
   run [profile] sync one profile by name, or all (default)
-  seed          rclone-copy the priority subtrees straight from the remote
-  seed-full     rclone-copy the full configured tree into the cache (fast)
+  seed          bulk-seed the priority subtrees from their sources
+  seed-full     bulk-seed the full configured tree into the cache (fast)
   install       install Unison profiles, systemd units/timers, and seed
   uninstall     remove those units/timers/profiles (NOT the cache or config)
   config        show sources, profiles, and where their artifacts live
@@ -222,18 +223,24 @@ check_if_mounted() {
   mount | grep -q "on $CHARON_MOUNT "; return $?
 }
 
-# Probe the remote API directly (NOT the FUSE mount, which stays "mounted" with
-# no network). Three states from rclone's error text, so a transient throttle is
-# never mislabelled "offline":  0 online / 3 rate-limited / 2 offline.
-check_online() {
-  out=$("$RCLONE_BIN" about "${CHARON_REMOTE}:" \
-    --contimeout 5s --timeout 15s --retries 1 --low-level-retries 1 2>&1)
-  if [ $? -eq 0 ]; then return 0; fi
-  case "$out" in
-    *rateLimitExceeded*|*userRateLimitExceeded*|*quotaExceeded*|\
-    *"Quota exceeded"*|*"Error 403"*|*"Error 429"*) return 3 ;;
-  esac
-  return 2
+# Ask the PROVIDER how the source is doing, tri-state, so a transient throttle
+# is never mislabelled offline and turned into a fault:
+#   0 online / 2 offline / 3 rate-limited.
+#
+# This used to run `rclone about <global remote>:` itself. That made the gate
+# rclone-only and install-global: a PROVIDER=none source (fstab, automount, a
+# plain directory) was probed against an rclone remote it does not have, came
+# back "offline" on EVERY pass, and skipped forever -- while the docs promised
+# it still reconciled. The sync must not know how a source is realised.
+source_health() {   # <source>
+  "$(dirname "$_self")/charon-source" health "$1" >/dev/null 2>&1
+}
+
+# Is the source up? Also the provider's question: charon requires a mountpoint
+# where IT did the mounting, and only existence where something else owns the
+# tree.
+source_up() {   # <source>
+  "$(dirname "$_self")/charon-source" status "$1" >/dev/null 2>&1
 }
 
 # 0 if <dir> holds at least one entry (hidden ones count). A plain glob would
@@ -260,20 +267,20 @@ dir_has_entries() {   # <dir>
 # The test is ASYMMETRIC on purpose. Source-empty while cache-full is the
 # dead-mount signature and is refused. The REVERSE (source full, cache empty)
 # is a FIRST SEED and must be allowed, or no new profile could ever populate.
-check_source_sane() {   # <subtree>
-  if ! dir_has_entries "$CHARON_MOUNT"; then
-    log_error "source root '$CHARON_MOUNT' is EMPTY; the mount looks dead."
+check_source_sane() {   # <source> <mount-root> <cache-root> <subtree>
+  if ! dir_has_entries "$2"; then
+    log_error "source '$1' root '$2' is EMPTY; the source looks dead."
     log_error "refusing the pass: a two-way sync would propagate that"\
               "emptiness to the remote as deletions."
     return 1
   fi
-  _sm=$CHARON_MOUNT/$1
-  _sc=$CHARON_CACHE/$1
+  _sm=$2${4:+/$4}
+  _sc=$3${4:+/$4}
   if [ -d "$_sm" ] && ! dir_has_entries "$_sm" && dir_has_entries "$_sc"; then
     log_error "source subtree '$_sm' is EMPTY while cache '$_sc' is not."
-    log_error "that is the dead-mount signature, so the pass is REFUSED"\
+    log_error "that is the dead-source signature, so the pass is REFUSED"\
               "rather than propagating deletions."
-    log_error "if the remote really was emptied on purpose, clear the cache"\
+    log_error "if the source really was emptied on purpose, clear the cache"\
               "subtree by hand and re-run."
     return 1
   fi
@@ -281,25 +288,29 @@ check_source_sane() {   # <subtree>
 }
 
 # Readiness for a sync run:  0 ready / 1 fault (flag) / 2 skip this pass.
-check_runtime_prereqs() {
-  check_online
+# Everything here is resolved PER SOURCE. It was global before, so a second
+# source would have been gated against the wrong remote and checked against the
+# wrong cache.
+check_runtime_prereqs() {   # <source> <cache-root>
+  source_health "$1"
   case $? in
     0) : ;;
-    3) log_warn "remote API rate-limited (HTTP 403/429 quota); skipping this"\
-                "pass -- the next timer retries"; return 2 ;;
+    3) log_warn "source '$1' is rate-limited; skipping this pass -- the next"\
+                "timer retries"; return 2 ;;
     # WARN, not INFO: charon-sync runs at LOG_LEVEL 2, so an INFO reason was
     # discarded and the skip became unexplainable after the fact.
-    *) log_warn "remote API unreachable (offline); skipping this pass"
+    *) log_warn "source '$1' is unreachable (offline); skipping this pass"
        return 2 ;;
   esac
-  if [ ! -d "$CHARON_CACHE" ]; then
-    log_error "local cache dir not found: $CHARON_CACHE"; return 1
+  if [ ! -d "$2" ]; then
+    log_error "local cache dir not found: $2"; return 1
   fi
   if ! command -v unison >/dev/null 2>&1; then
     log_error "'unison' is not installed (run: ${APP_NAME} install)"; return 1
   fi
-  if ! check_if_mounted; then
-    log_error "'$CHARON_MOUNT' does not appear to be mounted"; return 1
+  if ! source_up "$1"; then
+    log_error "source '$1' is not available (not mounted, or missing)"
+    return 1
   fi
   return 0
 }
@@ -553,43 +564,40 @@ setup_systemd_units() {
 # Fast, resumable initial population of specific subtrees straight from the
 # remote API with rclone (parallel, idempotent, RESUMES after interruption --
 # unlike a killed unison-over-FUSE crawl, which loses all progress). Non-fatal.
-seed_subtrees() {   # <subtree>...
-  if ! command -v "$RCLONE_BIN" >/dev/null 2>&1; then
-    log_error "'$RCLONE_BIN' not found; cannot seed subtrees"; return 1
-  fi
-  rc=0
-  for sub in "$@"; do
-    [ -n "$sub" ] || continue
-    src="${CHARON_REMOTE}:${sub}"
-    dst="$CHARON_CACHE/$sub"
-    log_info "seeding $sub (rclone copy, resumable) -> $dst"
-    mkdir -p "$dst"
-    if "$RCLONE_BIN" copy "$src" "$dst" \
-         --transfers 4 --checkers 8 --fast-list \
-         --contimeout 15s --timeout 60s --retries 3 --low-level-retries 20; then
-      log_info "seeded $sub"
-    else
-      log_warn "seed of $sub incomplete (rate-limited or offline; the timers"\
-               "will finish it later)"
-      rc=1
-    fi
-  done
-  return $rc
+# Seed one profile's subtree, THROUGH THE PROVIDER. It used to run rclone
+# itself against the global remote and global cache, which made seeding
+# rclone-only and blind to which source a profile actually uses. A provider
+# that cannot bulk-copy (PROVIDER=none) is not a failure: seeding is an
+# optimisation, and the reconciler populates the cache on its first pass.
+seed_profile() {   # <profile> <subtree>
+  _ss=$(profile_source_name "$1"); [ -n "$_ss" ] || return 0
+  _sc=$(source_get "$_ss" CACHE_ROOT); [ -n "$_sc" ] || return 0
+  [ -n "$2" ] || return 0
+  "$(dirname "$_self")/charon-source" seed "$_ss" "$2" "$_sc/$2" || {
+    log_warn "seed of '$2' incomplete (offline or rate-limited; the timers"\
+             "will finish it later)"
+    return 1
+  }
+  return 0
 }
 
 # The priority subtrees (SEED_PRIORITY across profiles): seeded synchronously.
-priority_subtrees() {
+# Seed every profile's SEED_PRIORITY subtree, synchronously: a fresh box needs
+# these now (a desktop wallpaper, say).
+seed_priority() {
+  _r=0
   for p in $(profile_names); do
-    _sp=$(profile_get "$p" SEED_PRIORITY); [ -n "$_sp" ] && printf '%s\n' "$_sp"
+    _sp=$(profile_get "$p" SEED_PRIORITY); [ -n "$_sp" ] || continue
+    seed_profile "$p" "$_sp" || _r=1
   done
+  return $_r
 }
 
-# The full-seed subtrees: profiles with SEED_FULL_ORDER, ascending, -> SUBTREE.
-full_subtrees() {
+# Profiles that join the background full seed, in ascending SEED_FULL_ORDER.
+full_profiles() {
   for p in $(profile_names); do
     _o=$(profile_get "$p" SEED_FULL_ORDER); [ -n "$_o" ] || continue
-    _sub=$(profile_subtree "$p"); [ -n "$_sub" ] || continue
-    printf '%s\t%s\n' "$_o" "$_sub"
+    printf '%s\t%s\n' "$_o" "$p"
   done | sort -n | cut -f2
 }
 
@@ -600,11 +608,12 @@ seed_full() {
     log_info "seed-full: a sync holds the lock; skipping (timers will populate)"
     return 0
   fi
-  _subs=$(full_subtrees)
-  log_info "seed-full: bulk-seeding [$(echo $_subs)] from the remote API"
-  # shellcheck disable=SC2086
-  seed_subtrees $_subs
-  _rc=$?
+  _rc=0
+  for p in $(full_profiles); do
+    _fs=$(profile_subtree "$p"); [ -n "$_fs" ] || continue
+    log_info "seed-full: bulk-seeding '$_fs' for profile '$p'"
+    seed_profile "$p" "$_fs" || _rc=1
+  done
   flock -u 9 2>/dev/null; exec 9>&-       # release BEFORE kicking Unison
   # Kick the profiles ONE AT A TIME, and WAIT for each. All profiles share a
   # single sync lock (overlapping unison runs would contend on the mount and on
@@ -621,22 +630,33 @@ seed_full() {
 
 # The GATE for one profile:  0 go / EX_SKIP skip cheaply / 1 fault (notified).
 gate_profile() {   # <profile> <service-name>
-  check_runtime_prereqs
+  _gs=$(profile_source_name "$1")
+  if [ -z "$_gs" ]; then
+    notify flag "$2" "profile '$1' names no source"
+    return 1
+  fi
+  _gm=$(source_get "$_gs" MOUNT); _gc=$(source_get "$_gs" CACHE_ROOT)
+  if [ -z "$_gm" ] || [ -z "$_gc" ]; then
+    notify flag "$2" "profile '$1' names source '$_gs', which is not defined"
+    return 1
+  fi
+
+  check_runtime_prereqs "$_gs" "$_gc"
   case $? in
     0) : ;;
     2) log_warn "SKIPPED charon-$1: no work done this pass"
        return "$EX_SKIP" ;;
     *) notify flag "$2" \
-         "'$CHARON_MOUNT' mount or cache not ready; check mount + cache."
+         "source '$_gs' or its cache is not ready; check the source."
        return 1 ;;
   esac
+
   # prereqs prove the plumbing is up; this proves the SOURCE is not lying about
   # being empty. A fault, not a skip: an empty source over a populated cache
   # means something is wrong, and silence would be the whole bug again.
-  _sub=$(profile_get "$1" SUBTREE)
-  if [ -n "$_sub" ] && ! check_source_sane "$_sub"; then
-    MSG="source for '$1' looks dead (empty subtree); pass REFUSED so no"
-    MSG="$MSG deletions propagate to the remote. Check the mount."
+  if ! check_source_sane "$_gs" "$_gm" "$_gc" "$(profile_subtree "$1")"; then
+    MSG="source '$_gs' for profile '$1' looks dead (empty); pass REFUSED so"
+    MSG="$MSG no deletions propagate. Check the source."
     notify flag "$2" "$MSG"
     return 1
   fi
@@ -768,7 +788,7 @@ do_install() {
   # desktop wallpaper), then bulk-seed the full configured tree in BACKGROUND
   # (fast/parallel/resumable rclone copy, not a cold unison-over-FUSE crawl).
   # shellcheck disable=SC2046
-  seed_subtrees $(priority_subtrees) || true
+  seed_priority || true
   if command -v systemd-run >/dev/null 2>&1 \
      && systemd-run --user --collect --unit=charon-seed-initial \
           "$_self" seed-full >/dev/null 2>&1; then
@@ -949,7 +969,7 @@ case "$MODE" in
       log_error "unknown profile '$PROFILE'"; usage
     fi
     ;;
-  seed)      seed_subtrees $(priority_subtrees) ;;
+  seed)      seed_priority ;;
   seed-full) seed_full ;;
   install)   do_install ;;
   uninstall) do_uninstall ;;
