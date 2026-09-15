@@ -161,4 +161,38 @@ _is "$(_agg 75 1)"   "1"  "a fault outranks a skip"
 _is "$(_agg 1 75)"   "1"  "a fault is not downgraded by a later skip"
 _is "$(_agg 0 75 1)" "1"  "worst-of-three"
 
-pass "profile/source parsing, tilde handling, dir tests, trait derivation"
+#### the PROBE primitives: measurement code, tested by measuring ####
+# These decide every backend-derived pref, so a wrong answer here is a wrong
+# profile. One of them has already shipped a real bug: probe_times compared a
+# FORMATTED date, and `touch -d` read the string as UTC, so a perfectly good
+# filesystem was reported as unable to carry mtimes. That is why the timezone
+# case below exists.
+( CHARON_LIB_ONLY=1 . "$CHARON_LIBEXEC/charon-source" ) 2>/dev/null \
+  || fail "charon-source could not be sourced for unit testing"
+# shellcheck disable=SC1090
+. "$CHARON_LIBEXEC/charon-source"
+
+mkdir -p "$T/probe"
+_is "$(probe_case "$T/probe")"  "sensitive" "a local fs is case-sensitive"
+_is "$(probe_perms "$T/probe")" "posix"     "a local fs carries permissions"
+_is "$(probe_links "$T/probe")" "yes"       "a local fs supports symlinks"
+_is "$(probe_times "$T/probe")" "settable"  "a local fs carries mtimes"
+_is "$(probe_mountpoint "$T/probe")" "no"   "a plain dir is not a mountpoint"
+
+# THE TIMEZONE REGRESSION. A formatted-date comparison broke here once; epoch
+# seconds are timezone-free, so the answer must not depend on TZ at all.
+for _tz in UTC America/New_York Asia/Kathmandu Pacific/Kiritimati; do
+  _is "$(TZ=$_tz probe_times "$T/probe")" "settable" "probe_times under TZ=$_tz"
+done
+
+# every probe must clean up after itself: leftovers inside a source would be
+# litter on someone's remote.
+_left=$(ls -A "$T/probe" | wc -l)
+_is "$_left" "0" "the probes left files behind"
+
+# a source with no PROVIDER is 'none', not empty: charon must never treat an
+# unspecified provider as rclone and go looking for a remote.
+printf 'MOUNT=/x\nCACHE_ROOT=/y\n' > "$T/cfg/sources.d/np.conf"
+_is "$(source_provider np)" "none" "an unset PROVIDER defaults to none"
+
+pass "parsing, tildes, dir tests, trait derivation, probes, severity"
