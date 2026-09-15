@@ -59,4 +59,37 @@ grep -q '^SuccessExitStatus=75$' \
   "$XDG_CONFIG_HOME/systemd/user/charon-sync@.service" \
   || fail "unit does not mark the skip status a systemd success"
 
-pass "skip exits 75 and says why; a real pass exits 0"
+# --- CONCURRENCY: two passes at once must not both run ---
+# The lock exists because overlapping unison runs contend on the mount and on
+# each other's archives. Nothing tested it until now; the lock-held path was
+# only ever hit by accident (an install racing its own seed), which is a poor
+# way to learn whether a safety property holds.
+_rclone 0
+cat > "$T/bin/unison" <<EOF
+#!/bin/sh
+# slow enough that the second caller is guaranteed to find the lock held
+echo running >> "$T/unison.runs"
+sleep 3
+exit 0
+EOF
+chmod +x "$T/bin/unison"
+: > "$T/unison.runs"
+
+PATH="$T/bin:$PATH" sh "$HERE/bin/charon" sync docs >"$T/a.out" 2>&1 &
+_first=$!
+sleep 1                                  # let the first take the lock
+PATH="$T/bin:$PATH" sh "$HERE/bin/charon" sync docs >"$T/b.out" 2>&1
+_second=$?
+wait "$_first"; _firstrc=$?
+
+[ "$_firstrc" = 0 ] \
+  || fail "the first concurrent pass should have run (rc=$_firstrc)"
+[ "$_second" = 75 ] \
+  || fail "the second concurrent pass should SKIP with 75, got $_second"
+grep -qi 'holds the lock' "$T/b.out" \
+  || fail "the skipped pass did not say the lock was held ($(cat "$T/b.out"))"
+_runs=$(wc -l < "$T/unison.runs")
+[ "$_runs" = 1 ] \
+  || fail "unison ran $_runs times concurrently; the lock did not hold"
+
+pass "skip exits 75, says why, and the lock stops a concurrent pass"

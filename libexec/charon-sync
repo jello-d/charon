@@ -801,6 +801,19 @@ run_sync_profile() {
   return $RET
 }
 
+# The worse of two outcomes, by SEVERITY rather than recency: fault > skip >
+# success. `sync all` must report the worst thing that happened, or a fault
+# hides behind a later profile's success. A named function so the unit test
+# exercises THIS logic rather than a copy of it -- a test of a duplicate can
+# pass while the real code is wrong.
+worse_of() {   # <a> <b>
+  case "$2" in
+    0) printf '%s' "$1" ;;
+    "$EX_SKIP") [ "$1" -eq 0 ] && printf '%s' "$EX_SKIP" || printf '%s' "$1" ;;
+    *) printf '%s' "$2" ;;
+  esac
+}
+
 run_with_lock() {
   PROFILE="$1"   # a profile name, or "all"
   mkdir -p "$LOCKDIR"
@@ -812,19 +825,11 @@ run_with_lock() {
   if [ "$PROFILE" != all ]; then
     run_sync_profile "$PROFILE"; return $?
   fi
-  # Aggregate across profiles by SEVERITY, not by recency: a fault outranks a
-  # skip and a skip outranks success, so `run all` reports the worst thing that
-  # happened rather than whatever the last profile did.
   _rc=0
   for p in $(profile_names); do
-    run_sync_profile "$p"; _pr=$?
-    case "$_pr" in
-      0) : ;;
-      "$EX_SKIP") [ "$_rc" -eq 0 ] && _rc=$EX_SKIP || : ;;
-      *) _rc=$_pr ;;
-    esac
+    run_sync_profile "$p"; _rc=$(worse_of "$_rc" "$?")
   done
-  return $_rc
+  return "$_rc"
 }
 
 #### higher-level operations ####

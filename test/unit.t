@@ -143,4 +143,22 @@ paths_overlap /a/b /a/bc      && fail "/a/bc is not inside /a/b" || :
 paths_overlap /a/bcd /a/b     && fail "prefix is not containment" || :
 paths_overlap "" /a           && fail "an empty path cannot overlap" || :
 
+#### severity aggregation: `sync all` must report the WORST outcome ####
+# Reporting the LAST profile's result instead would let a fault hide behind a
+# later success, which is the whole reason this aggregates by severity.
+# Folds the REAL worse_of, not a reimplementation of it.
+_agg() {
+  _rc=0
+  for _pr in "$@"; do _rc=$(worse_of "$_rc" "$_pr"); done
+  printf '%s' "$_rc"
+}
+_is "$(_agg 0 0)"    "0"  "all success aggregates to success"
+_is "$(_agg 0 75)"   "75" "a skip beats success"
+_is "$(_agg 75 0)"   "75" "a skip is not erased by a later success"
+_is "$(_agg 0 1)"    "1"  "a fault beats success"
+_is "$(_agg 1 0)"    "1"  "a fault is not erased by a later success"
+_is "$(_agg 75 1)"   "1"  "a fault outranks a skip"
+_is "$(_agg 1 75)"   "1"  "a fault is not downgraded by a later skip"
+_is "$(_agg 0 75 1)" "1"  "worst-of-three"
+
 pass "profile/source parsing, tilde handling, dir tests, trait derivation"

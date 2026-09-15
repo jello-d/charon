@@ -67,7 +67,7 @@ policy:
     #SEED_PRIORITY=Docs/now    # subtree seeded synchronously at install
     SEED_FULL_ORDER=10         # join the background full seed, ascending
     #IGNORE=*.tmp              # exclude; repeatable
-    #CONFLICT=remote           # remote (default) | local | newer
+    #CONFLICT=remote           # remote (default) | local | newer (see note)
     #DELETE=propagate          # propagate (default) | never (see note)
 
 Several profiles normally share one source, which is why the two are separate:
@@ -78,6 +78,11 @@ profile would let two profiles disagree about the same tree.
 reconciler in one place, so the engine underneath stays replaceable. For
 anything beyond them, a verbatim `~/.unison/charon-<name>.prf.local` is
 included if present, and is explicitly unsupported.
+
+`CONFLICT` decides who wins *and* where the overwritten copy is kept. With the
+default `remote` the copy stays local, so resolving a conflict costs the remote
+nothing. `local` — and `newer` whenever the cache is the newer side — leaves
+that copy **on the remote**, which is a write you would not otherwise make.
 
 `DELETE=never` stops a deletion reaching the far side, and is blunter than it
 sounds: the far copy survives, but the path becomes an unresolved conflict and

@@ -119,21 +119,61 @@ _sync
 [ -e "$T/cache/D/skipme/deep/buried.txt" ] \
   && fail "IGNORE=skipme/deep did not actually exclude the path" || :
 
-#### CONFLICT=newer: the newer mtime really wins ####
+#### CONFLICT: who wins, and WHERE the losing copy lands ####
+# The second question matters as much as the first. copyonconflict keeps the
+# overwritten version, and which SIDE it lands on decides whether resolving a
+# conflict quietly writes to the remote -- the thing this project exists to
+# avoid. The docs make specific claims here; these assert them.
+_conflict_setup() {   # <CONFLICT value>
+  _reset
+  printf 'SOURCE=s:D\nCONFLICT=%s\n' "$1" > "$CFG/profiles.d/docs.conf"
+  echo original > "$T/src/D/both.txt"
+  echo filler   > "$T/src/D/other.txt"
+  _c install >/dev/null 2>&1 || fail "install failed (CONFLICT=$1)"
+  _sync
+  echo from-source > "$T/src/D/both.txt"
+  echo from-cache  > "$T/cache/D/both.txt"
+  sleep 1
+  _sync
+}
+_copies() { ls "$1" | grep -c 'conflict_on' || :; }
+
+# remote (the default): the SOURCE wins and the copy stays LOCAL, so resolving
+# a conflict costs the remote nothing.
+_conflict_setup remote
+_is=$(cat "$T/src/D/both.txt")
+[ "$_is" = from-source ] \
+  || fail "CONFLICT=remote: the source should win, got '$_is'"
+[ "$(_copies "$T/cache/D")" -ge 1 ] \
+  || fail "CONFLICT=remote: the overwritten local copy was not kept"
+[ "$(_copies "$T/src/D")" = 0 ] \
+  || fail "CONFLICT=remote wrote a conflict copy to the REMOTE"
+
+# local: the cache wins, and the copy DOES land on the remote. Documented as a
+# caveat; assert it so the caveat cannot quietly become false.
+_conflict_setup local
+_is=$(cat "$T/src/D/both.txt")
+[ "$_is" = from-cache ] || fail "CONFLICT=local: cache should win, got '$_is'"
+[ "$(_copies "$T/src/D")" -ge 1 ] \
+  || fail "CONFLICT=local should leave the overwritten copy on the remote"
+
+# newer, cache side newer: the same remote-write caveat applies, which the
+# documentation did not mention until this test was written.
 _reset
 printf 'SOURCE=s:D\nCONFLICT=newer\n' > "$CFG/profiles.d/docs.conf"
-echo original > "$T/src/D/both.txt"
+echo original > "$T/src/D/both.txt"; echo filler > "$T/src/D/other.txt"
 _c install >/dev/null 2>&1 || fail "install failed (CONFLICT=newer)"
 _sync
-# change BOTH sides; make the cache copy unambiguously newer
 echo from-source > "$T/src/D/both.txt"
 touch -d @1000000000 "$T/src/D/both.txt"
 echo from-cache > "$T/cache/D/both.txt"
 touch -d @2000000000 "$T/cache/D/both.txt"
 _sync
-_is=$(cat "$T/src/D/both.txt")
-[ "$_is" = from-cache ] \
-  || fail "CONFLICT=newer did not let the newer side win (source says '$_is')"
+[ "$(cat "$T/src/D/both.txt")" = from-cache ] \
+  || fail "CONFLICT=newer did not let the newer side win"
+[ "$(_copies "$T/src/D")" -ge 1 ] \
+  || fail "CONFLICT=newer: expected the loser copy on the remote when the
+    cache wins -- if this changed, the docs need updating"
 
 #### the charon-generated profile really does ignore unison's own temps ####
 # The bug that started all of this: a stranded .unison.*.tmp being treated as
