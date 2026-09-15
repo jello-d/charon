@@ -61,7 +61,12 @@ source_get() {   # <source> <KEY>
       PROVIDER)   _v=rclone ;;
     esac
   fi
-  # quote the pattern so the shell does not tilde-EXPAND it (see profile_get)
+  # The quoting is the POINT, and a static analyser will flag it as a mistake:
+  # we are matching and stripping a LITERAL "~/", so it must NOT expand. Unquote
+  # it and the shell turns the pattern into $HOME/, which never matches the
+  # literal prefix -- that exact bug put a working link at $HOME/~/... on a live
+  # box.
+  # shellcheck disable=SC2088
   case "$_v" in "~/"*) _v="$HOME/${_v#"~/"}" ;; esac
   printf '%s' "$_v"
 }

@@ -20,4 +20,17 @@ for _f in "$HERE"/bin/* "$HERE"/libexec/* "$HERE"/setup.sh "$HERE"/test/run; do
   _n=$((_n + 1))
 done
 
+# STATIC ANALYSIS, when the tool is available. A parse check proves the script
+# runs; it says nothing about quoting a path with a space, an unguarded rm -rf,
+# or `A && B || C` not being if-then-else. shellcheck found a real one here: an
+# empty MOUNT would have turned a cleanup into `rm -rf "/.charon-probe"`.
+# Skipped rather than failed when absent, so the suite still runs anywhere.
+if command -v shellcheck >/dev/null 2>&1; then
+  _sc=$(shellcheck -s sh -f gcc "$HERE"/bin/* "$HERE"/libexec/* \
+          "$HERE/setup.sh" 2>/dev/null) || :
+  [ -z "$_sc" ] || fail "shellcheck findings:
+$_sc"
+  _n=$((_n + 1))
+fi
+
 pass "$_n scripts parse"

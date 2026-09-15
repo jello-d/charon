@@ -22,6 +22,7 @@ set -eu
 
 PKG=charon
 VERSION=0.1.0
+# shellcheck disable=SC1007  # CDPATH= is a deliberate clear, not a typo
 _root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 if [ -z "${HOME:-}" ]; then
@@ -97,16 +98,21 @@ do_check() {
   for _t in "$_root"/bin/*; do _n=$(basename "$_t")
     if command -v "$_n" >/dev/null 2>&1; then ok "$_n present"
     else bad "$_n not on PATH"; fi; done
-  [ -f "$_lib/$PKG/common.sh" ] && ok "libexec/common.sh installed" \
-    || bad "libexec/common.sh missing ($_lib/$PKG/common.sh)"
-  [ -f "$_shr/$PKG/example.conf" ] && ok "share example.conf installed" \
-    || bad "share/example.conf missing ($_shr/$PKG/example.conf)"
+  if [ -f "$_lib/$PKG/common.sh" ]; then ok "libexec/common.sh installed"
+  else bad "libexec/common.sh missing ($_lib/$PKG/common.sh)"; fi
+  if [ -f "$_shr/$PKG/example.conf" ]; then ok "share example.conf installed"
+  else bad "share/example.conf missing ($_shr/$PKG/example.conf)"; fi
+  if [ -f "$_shr/$PKG/example-source.conf" ]; then
+    ok "share example-source.conf installed"
+  else bad "share/example-source.conf missing"; fi
   for _d in $DEPS_HARD; do
-    command -v "$_d" >/dev/null 2>&1 && ok "dep $_d present" \
-      || warn "dep $_d absent (core: mount/sync will not work)"; done
+    if command -v "$_d" >/dev/null 2>&1; then ok "dep $_d present"
+    else warn "dep $_d absent (core: mount/sync will not work)"; fi
+  done
   for _d in $DEPS_SOFT; do
-    command -v "$_d" >/dev/null 2>&1 && ok "dep $_d present" \
-      || warn "dep $_d absent (a feature degrades)"; done
+    if command -v "$_d" >/dev/null 2>&1; then ok "dep $_d present"
+    else warn "dep $_d absent (a feature degrades)"; fi
+  done
 }
 
 _U="usage: setup.sh [install|bootstrap|uninstall|check|test|version]"

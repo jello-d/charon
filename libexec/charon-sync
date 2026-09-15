@@ -55,6 +55,12 @@
 # Default WARN. Assigned with := so the ENVIRONMENT still wins: it used to be a
 # bare assignment, which silently discarded LOG_LEVEL=4 from a caller and made
 # live debugging far harder than it needed to be.
+# The template blocks at the end of this file are DATA read back out of it,
+# not code. They must still parse as shell (dash -n reads past `exit 0`), but
+# a static analyser reads `[Unit]` as a broken test expression. dash -n is
+# the authoritative parse check here, so silencing that confusion costs us
+# nothing real.
+# shellcheck disable=SC1035,SC1072,SC1073,SC1020
 : "${LOG_LEVEL:=2}"   # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE
 # logger + CHARON_REMOTE/MOUNT/CACHE/CONFIG, shared with charon-mount (a sibling
 # in libexec). Reached via the `charon` dispatcher, or run directly.
@@ -1055,6 +1061,7 @@ do_check() {
 # stubs, which is slow and cannot reach an edge case cheaply. With this, a unit
 # test sources the file and calls a function directly with controlled input.
 # Executing the script is unaffected: the variable is only ever set by a test.
+# shellcheck disable=SC2317  # the dispatch below IS reached when executed
 if [ -n "${CHARON_LIB_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 #### main ####

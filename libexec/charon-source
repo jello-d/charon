@@ -24,6 +24,8 @@
 #
 # A FAILED PROBE RECORDS NOTHING. An uncertain measurement is worse than no
 # measurement, because it becomes an assertion nobody re-checks.
+#
+# shellcheck disable=SC1091
 
 : "${LOG_LEVEL:=3}"    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE (environment wins)
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
@@ -273,7 +275,7 @@ do_probe() {   # <source>
   _link=$(probe_links "$_pd")
   _fsty=$(probe_fstype "$_mnt")
   _mp=$(probe_mountpoint "$_mnt")
-  rmdir "$_pd" 2>/dev/null || rm -rf "$_pd" 2>/dev/null || :
+  rmdir "$_pd" 2>/dev/null || rm -rf "${_pd:?}" 2>/dev/null || :
 
   _write_traits "$_src" "WRITABLE=yes" "CASE=$_case" "TIMES=$_time" \
     "PERMS=$_perm" "LINKS=$_link" "FSTYPE=$_fsty" "MOUNTPOINT=$_mp"
@@ -285,7 +287,13 @@ _probe_failed() {   # <source> <what>
   log_error "probe of '$1' failed at the $2 step; recording NOTHING."
   log_error "an uncertain measurement is worse than none: it becomes an"
   log_error "assertion nobody re-checks. Fix the source and probe again."
-  rm -rf "$(source_get "$1" MOUNT)/$PROBE_DIR_NAME" 2>/dev/null || :
+  # Guard the expansion. If MOUNT ever resolved empty -- an undefined source, a
+  # typo, a config edited between the probe starting and failing -- this became
+  # `rm -rf "/.charon-probe"`, an attempted delete at the filesystem ROOT. It
+  # would fail unprivileged, which is luck rather than design.
+  _pf_mnt=$(source_get "$1" MOUNT)
+  [ -n "$_pf_mnt" ] || return 0
+  rm -rf "${_pf_mnt:?}/$PROBE_DIR_NAME" 2>/dev/null || :
 }
 
 _write_traits() {   # <source> <KEY=VALUE>...
@@ -353,6 +361,7 @@ _need() {
 # stubs, which is slow and cannot reach an edge case cheaply. With this, a unit
 # test sources the file and calls a function directly with controlled input.
 # Executing the script is unaffected: the variable is only ever set by a test.
+# shellcheck disable=SC2317  # the dispatch below IS reached when executed
 if [ -n "${CHARON_LIB_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 case "${1:-}" in

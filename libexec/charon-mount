@@ -3,6 +3,12 @@
 # charon-mount: mount an rclone remote via FUSE and manage its systemd user unit
 #
 
+# The template blocks at the end of this file are DATA read back out of it,
+# not code. They must still parse as shell (dash -n reads past `exit 0`), but
+# a static analyser reads `[Unit]` as a broken test expression. dash -n is
+# the authoritative parse check here, so silencing that confusion costs us
+# nothing real.
+# shellcheck disable=SC1035,SC1072,SC1073,SC1020
 : "${LOG_LEVEL:=3}"    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE (environment wins)
 # logger + CHARON_REMOTE + CHARON_MOUNT, shared with charon-sync (sibling in
 # libexec). Reached via the `charon` dispatcher, or run directly.
@@ -339,6 +345,7 @@ do_uninstall() {
 # stubs, which is slow and cannot reach an edge case cheaply. With this, a unit
 # test sources the file and calls a function directly with controlled input.
 # Executing the script is unaffected: the variable is only ever set by a test.
+# shellcheck disable=SC2317  # the dispatch below IS reached when executed
 if [ -n "${CHARON_LIB_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 case "$1" in
@@ -356,6 +363,11 @@ case "$1" in
     ;;
 esac
 
+# The blocks below are DATA, not code: unit and profile templates read back out
+# of this file. They still have to parse as shell (dash -n reads past exit 0,
+# which is why a bare "(" in a unit Description once broke the build), but
+# shellcheck cannot know that and reports them as broken test expressions.
+# shellcheck disable=SC1035,SC1072,SC1073,SC1020,SC1007,SC2317
 exit 0
 
 #-----BEGIN-SYSTEMD-UNIT-CHARON-MOUNT-----
