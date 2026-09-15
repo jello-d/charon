@@ -79,6 +79,25 @@ printf '%s\n' "$out" | grep -qi 'empty' \
   || fail "the dead-source refusal did not say why ($out)"
 [ -f "$T/nascache/Docs/keep.txt" ] || fail "the guard let cache data be lost"
 
+# --- the multi-remote limitation must be DETECTED, not just documented ---
+# charon has ONE mount unit, so a second rclone-backed source would never be
+# mounted. That is a deliberate scope decision, but a source that silently
+# never mounts is precisely the asserted-vs-actual gap a check closes.
+for _n in one two; do
+  cat > "$CFG/sources.d/$_n.conf" <<EOF
+PROVIDER=rclone
+REMOTE=remote-$_n
+MOUNT=$T/$_n
+CACHE_ROOT=$T/${_n}cache
+EOF
+done
+out=$(_c check 2>&1) || :
+printf '%s\n' "$out" | grep -qi 'ONE mount unit' \
+  || fail "a second rclone source was not reported as unmountable ($out)"
+_c check >/dev/null 2>&1 && fail "check passed with an unmountable source" || :
+rm -f "$CFG/sources.d/one.conf" "$CFG/sources.d/two.conf"
+_c check >/dev/null 2>&1 || :   # back to one source
+
 # --- no systemd must be LOUD, not silently successful ---
 # charon schedules through systemd --user. Without it, install still writes the
 # unit files (they are just text) and used to exit 0 having scheduled nothing,
