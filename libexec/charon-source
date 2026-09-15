@@ -27,7 +27,11 @@
 
 : "${LOG_LEVEL:=3}"    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE (environment wins)
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-. "$(dirname "$_self")/common.sh" 2>/dev/null || {
+# Where the sibling impls and common.sh live. Normally alongside this file;
+# CHARON_LIBEXEC overrides it so a unit test can SOURCE this file, where $0 is
+# the test's shell rather than the script and self-location cannot work.
+CHARON_LIBEXEC=${CHARON_LIBEXEC:-$(dirname "$_self")}
+. "$CHARON_LIBEXEC/common.sh" 2>/dev/null || {
   echo "charon-source: cannot source common.sh" >&2; exit 1; }
 
 PROFILES_DIR="$CHARON_CONFIG/profiles.d"
@@ -330,7 +334,7 @@ do_show() {   # <source>
 do_updown() {   # <up|down> <source>
   case "$(source_provider "$2")" in
     rclone)
-      CHARON_SOURCE=$2 exec "$(dirname "$_self")/charon-mount" \
+      CHARON_SOURCE=$2 exec "$CHARON_LIBEXEC/charon-mount" \
         "$([ "$1" = up ] && echo run || echo stop)" ;;
     none)
       log_warn "source '$2' has PROVIDER=none: something else owns that tree"
@@ -344,6 +348,12 @@ _need() {
   [ -n "$1" ] && return 0
   log_error "a source name is required"; usage >&2; exit 2
 }
+
+# SOURCEABLE FOR TESTING. Every test until now drove the whole command against
+# stubs, which is slow and cannot reach an edge case cheaply. With this, a unit
+# test sources the file and calls a function directly with controlled input.
+# Executing the script is unaffected: the variable is only ever set by a test.
+if [ -n "${CHARON_LIB_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 case "${1:-}" in
   list)     source_names ;;

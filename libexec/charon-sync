@@ -59,13 +59,17 @@
 # logger + CHARON_REMOTE/MOUNT/CACHE/CONFIG, shared with charon-mount (a sibling
 # in libexec). Reached via the `charon` dispatcher, or run directly.
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-. "$(dirname "$_self")/common.sh" 2>/dev/null || {
+# Where the sibling impls and common.sh live. Normally alongside this file;
+# CHARON_LIBEXEC overrides it so a unit test can SOURCE this file, where $0 is
+# the test's shell rather than the script and self-location cannot work.
+CHARON_LIBEXEC=${CHARON_LIBEXEC:-$(dirname "$_self")}
+. "$CHARON_LIBEXEC/common.sh" 2>/dev/null || {
   echo "charon-sync: cannot source common.sh" >&2; exit 1; }
 
 UNISON_DIR="${UNISON_DIR:-$HOME/.unison}"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 PROFILES_DIR="$CHARON_CONFIG/profiles.d"
-EXAMPLE_CONF="$(dirname "$_self")/../share/charon/example.conf"
+EXAMPLE_CONF="$CHARON_LIBEXEC/../share/charon/example.conf"
 
 LOCKDIR="$HOME/.cache"
 LOCKFILE="$LOCKDIR/charon-sync.lock"
@@ -240,14 +244,14 @@ check_if_mounted() {
 # back "offline" on EVERY pass, and skipped forever -- while the docs promised
 # it still reconciled. The sync must not know how a source is realised.
 source_health() {   # <source>
-  "$(dirname "$_self")/charon-source" health "$1" >/dev/null 2>&1
+  "$CHARON_LIBEXEC/charon-source" health "$1" >/dev/null 2>&1
 }
 
 # Is the source up? Also the provider's question: charon requires a mountpoint
 # where IT did the mounting, and only existence where something else owns the
 # tree.
 source_up() {   # <source>
-  "$(dirname "$_self")/charon-source" status "$1" >/dev/null 2>&1
+  "$CHARON_LIBEXEC/charon-source" status "$1" >/dev/null 2>&1
 }
 
 # 0 if <dir> holds at least one entry (hidden ones count). A plain glob would
@@ -471,7 +475,7 @@ ensure_source_traits() {
     _s=$(profile_source_name "$_p"); [ -n "$_s" ] || continue
     traits_present "$_s" && continue
     log_info "source '$_s' has no traits yet; probing (config time, once)"
-    "$(dirname "$_self")/charon-source" probe "$_s" || {
+    "$CHARON_LIBEXEC/charon-source" probe "$_s" || {
       log_error "probe of '$_s' failed; its profiles cannot be rendered"; }
   done
   return 0
@@ -587,7 +591,7 @@ seed_profile() {   # <profile> <subtree>
   _ss=$(profile_source_name "$1"); [ -n "$_ss" ] || return 0
   _sc=$(source_get "$_ss" CACHE_ROOT); [ -n "$_sc" ] || return 0
   [ -n "$2" ] || return 0
-  "$(dirname "$_self")/charon-source" seed "$_ss" "$2" "$_sc/$2" || {
+  "$CHARON_LIBEXEC/charon-source" seed "$_ss" "$2" "$_sc/$2" || {
     log_warn "seed of '$2' incomplete (offline or rate-limited; the timers"\
              "will finish it later)"
     return 1
@@ -975,6 +979,12 @@ do_check() {
   check_notify_seam || _rc=1
   return $_rc
 }
+
+# SOURCEABLE FOR TESTING. Every test until now drove the whole command against
+# stubs, which is slow and cannot reach an edge case cheaply. With this, a unit
+# test sources the file and calls a function directly with controlled input.
+# Executing the script is unaffected: the variable is only ever set by a test.
+if [ -n "${CHARON_LIB_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 #### main ####
 MODE=$1

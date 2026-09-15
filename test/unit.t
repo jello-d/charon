@@ -1,0 +1,135 @@
+#!/bin/sh
+# unit.t - UNIT tests: functions called directly with controlled input.
+#
+# Every other test here is an integration test -- drive the whole command
+# against stubs and inspect what it wrote. Those prove the pieces fit, but they
+# are slow, and they cannot cheaply reach an edge case (an empty value, a
+# hidden file, a tilde, a pattern with a slash). Several real bugs in this
+# project lived exactly there: `${v#~/}` tilde-expanding the PATTERN, a
+# formatted-date comparison that a timezone broke, an unmounted mountpoint
+# passing an existence test.
+#
+# These run in milliseconds, so the edge cases can be exhaustive.
+. "$(dirname "$0")/lib.sh"
+harness_init unit
+
+export CHARON_LIBEXEC=$HERE/libexec
+export CHARON_LIB_ONLY=1
+export HOME=$T
+export CHARON_CONFIG=$T/cfg
+export CHARON_SOURCES_DIR=$T/cfg/sources.d
+export CHARON_TRAITS_DIR=$T/traits
+export CHARON_REMOTE=testremote
+export CHARON_MOUNT=$T/mnt
+export CHARON_CACHE=$T/cache
+mkdir -p "$T/cfg/profiles.d" "$T/cfg/sources.d" "$T/traits"
+
+# shellcheck disable=SC1090
+. "$CHARON_LIBEXEC/charon-sync"
+
+_is() {   # <got> <want> <label>
+  [ "$1" = "$2" ] || fail "$3: got '$1', want '$2'"
+}
+
+#### profile_get: literal reads, and the tilde trap ####
+cat > "$T/cfg/profiles.d/p.conf" <<EOF
+SUBTREE=Docs
+LINKISH=~/somewhere
+EMPTY=
+SPACED=a value with spaces
+IGNORE=one
+IGNORE=two/three
+EOF
+_is "$(profile_get p SUBTREE)" "Docs"                 "profile_get plain"
+_is "$(profile_get p MISSING)" ""                     "profile_get absent key"
+_is "$(profile_get p EMPTY)"   ""                     "profile_get empty value"
+_is "$(profile_get p SPACED)"  "a value with spaces"  "profile_get keeps spaces"
+# THE TILDE TRAP: the strip pattern must be QUOTED, or the shell expands the
+# ~/ in the pattern to $HOME/ and it never matches the literal prefix. That bug
+# put a working link at $HOME/~/... on a live box.
+_is "$(profile_get p LINKISH)" "$T/somewhere"         "profile_get expands ~/"
+_is "$(profile_get nosuch KEY)" ""                    "profile_get absent file"
+# repeatable keys: get takes the FIRST, get_all takes all
+_is "$(profile_get p IGNORE)" "one"                   "profile_get takes first"
+_is "$(profile_get_all p IGNORE | tr '\n' ',')" "one,two/three," \
+    "profile_get_all returns every value"
+
+#### which source a profile names ####
+printf 'SOURCE=nas:Docs\n'  > "$T/cfg/profiles.d/a.conf"
+printf 'SOURCE=nas\n'       > "$T/cfg/profiles.d/b.conf"
+printf 'SUBTREE=Legacy\n'   > "$T/cfg/profiles.d/c.conf"
+printf 'INTERVAL=5m\n'      > "$T/cfg/profiles.d/d.conf"
+printf 'SOURCE=nas:a/b/c\n' > "$T/cfg/profiles.d/e.conf"
+_is "$(profile_source_name a)" "nas"     "SOURCE=src:sub -> source"
+_is "$(profile_subtree a)"     "Docs"    "SOURCE=src:sub -> subtree"
+_is "$(profile_source_name b)" "nas"     "SOURCE=src (whole source)"
+_is "$(profile_subtree b)"     ""        "SOURCE=src has no subtree"
+_is "$(profile_source_name c)" "default" "legacy SUBTREE= means default"
+_is "$(profile_subtree c)"     "Legacy"  "legacy SUBTREE= subtree"
+_is "$(profile_source_name d)" ""        "no SOURCE and no SUBTREE: no source"
+_is "$(profile_subtree e)"     "a/b/c"   "a subtree may contain slashes"
+
+#### source_get: the implicit default, and overrides ####
+_is "$(source_get default MOUNT)"      "$T/mnt"      "implicit default MOUNT"
+_is "$(source_get default CACHE_ROOT)" "$T/cache"    "implicit default CACHE"
+_is "$(source_get default REMOTE)"     "testremote"  "implicit default REMOTE"
+_is "$(source_get default PROVIDER)"   "rclone"      "implicit default PROVIDER"
+_is "$(source_get nosuch MOUNT)"       ""            "undefined source is empty"
+printf 'MOUNT=~/declared\nPROVIDER=none\n' > "$T/cfg/sources.d/d2.conf"
+_is "$(source_get d2 MOUNT)"    "$T/declared" "declared MOUNT expands ~/"
+_is "$(source_get d2 PROVIDER)" "none"        "declared PROVIDER"
+_is "$(source_get d2 REMOTE)"   ""            "no REMOTE on a none source"
+# a file may override the implicit default, key by key
+printf 'MOUNT=/over/ridden\n' > "$T/cfg/sources.d/default.conf"
+_is "$(source_get default MOUNT)"  "/over/ridden" "default.conf overrides"
+_is "$(source_get default REMOTE)" "testremote"   "unset keys still derive"
+rm -f "$T/cfg/sources.d/default.conf"
+
+#### dir_has_entries: hidden files count, empty and absent do not ####
+mkdir -p "$T/d_empty" "$T/d_hidden" "$T/d_plain"
+: > "$T/d_plain/f"; : > "$T/d_hidden/.hidden"
+dir_has_entries "$T/d_plain"   || fail "a plain file should count"
+dir_has_entries "$T/d_hidden"  || fail "a HIDDEN file should count (it is data)"
+dir_has_entries "$T/d_empty"   && fail "an empty dir must not count" || :
+dir_has_entries "$T/nonexistent" && fail "an absent dir must not count" || :
+
+#### traits -> unison prefs: the derivation that decides correctness ####
+_traits() { printf '%s\n' "$@" > "$T/traits/s"; }
+_traits CASE=sensitive TIMES=settable PERMS=posix LINKS=yes FSTYPE=ext4
+out=$(render_prf_traits s)
+printf '%s\n' "$out" | grep -qx 'ignorecase = false' || fail "POSIX: ignorecase"
+printf '%s\n' "$out" | grep -qx 'times = true'       || fail "POSIX: times"
+printf '%s\n' "$out" | grep -q 'perms = 0' \
+  && fail "a POSIX source must keep its permissions" || :
+printf '%s\n' "$out" | grep -q 'links = false' \
+  && fail "a POSIX source must keep its symlinks" || :
+printf '%s\n' "$out" | grep -q 'ignoreinodenumbers' \
+  && fail "a POSIX source must not ignore stable inodes" || :
+
+# the cloud shape: every one of fat's components, derived not assumed
+_traits CASE=sensitive TIMES=settable PERMS=none LINKS=no FSTYPE=fuseblk
+out=$(render_prf_traits s)
+for want in 'ignorecase = false' 'times = true' 'perms = 0' \
+            'dontchmod = true' 'links = false' 'ignoreinodenumbers = true'; do
+  printf '%s\n' "$out" | grep -qx "$want" || fail "cloud shape missing: $want"
+done
+printf '%s\n' "$out" | grep -q '^fat = ' \
+  && fail "the fat shorthand is back; components must be explicit" || :
+
+# a case-INSENSITIVE backend (SMB, FAT): the one charon must not get wrong
+_traits CASE=insensitive TIMES=settable PERMS=none LINKS=no FSTYPE=cifs
+render_prf_traits s | grep -qx 'ignorecase = true' \
+  || fail "an insensitive backend must fold case"
+
+# a backend that cannot carry mtimes
+_traits CASE=sensitive TIMES=fixed PERMS=posix LINKS=yes FSTYPE=ext4
+render_prf_traits s | grep -qx 'times = false' \
+  || fail "a backend with fixed mtimes must not be told to propagate them"
+
+# missing traits: the safe default is the SENSITIVE one, because folding case
+# on a case-sensitive backend silently merges two distinct files.
+: > "$T/traits/s"
+render_prf_traits s | grep -qx 'ignorecase = false' \
+  || fail "with no CASE trait the default must be case-SENSITIVE"
+
+pass "profile/source parsing, tilde handling, dir tests, trait derivation"

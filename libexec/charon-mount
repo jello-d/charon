@@ -7,7 +7,11 @@
 # logger + CHARON_REMOTE + CHARON_MOUNT, shared with charon-sync (sibling in
 # libexec). Reached via the `charon` dispatcher, or run directly.
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-. "$(dirname "$_self")/common.sh" 2>/dev/null || {
+# Where the sibling impls and common.sh live. Normally alongside this file;
+# CHARON_LIBEXEC overrides it so a unit test can SOURCE this file, where $0 is
+# the test's shell rather than the script and self-location cannot work.
+CHARON_LIBEXEC=${CHARON_LIBEXEC:-$(dirname "$_self")}
+. "$CHARON_LIBEXEC/common.sh" 2>/dev/null || {
   echo "charon-mount: cannot source common.sh" >&2; exit 1; }
 
 RCLONE_BIN="${RCLONE_BIN:-rclone}"
@@ -237,8 +241,8 @@ do_check() {
   # silently never mounts is exactly the asserted-vs-actual gap a check exists
   # to close. Say it here, where it is true, instead of only at install time.
   _rs=0
-  for _s in $("$(dirname "$_self")/charon-source" list 2>/dev/null); do
-    [ "$("$(dirname "$_self")/charon-source" provider "$_s")" = rclone ] \
+  for _s in $("$CHARON_LIBEXEC/charon-source" list 2>/dev/null); do
+    [ "$("$CHARON_LIBEXEC/charon-source" provider "$_s")" = rclone ] \
       && _rs=$((_rs + 1))
   done
   if [ "$_rs" -gt 1 ]; then
@@ -330,6 +334,12 @@ do_uninstall() {
   systemctl --user daemon-reload >/dev/null 2>&1 || :
   log_info "removed the ${SYSTEMD_UNIT} unit; $MOUNTPOINT is untouched"
 }
+
+# SOURCEABLE FOR TESTING. Every test until now drove the whole command against
+# stubs, which is slow and cannot reach an edge case cheaply. With this, a unit
+# test sources the file and calls a function directly with controlled input.
+# Executing the script is unaffected: the variable is only ever set by a test.
+if [ -n "${CHARON_LIB_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 case "$1" in
   run)     shift; do_mount "$@" ;;
