@@ -534,18 +534,78 @@ render_prf_traits() {   # <source>
   esac
 }
 
-render_prf() {   # <profile>
+# CONFLICT, mapped onto unison HERE and nowhere else, so profiles never speak
+# the engine's vocabulary. Prints TWO lines: the explanatory note, then the
+# value for `prefer`. Split out of render_prf so it can be unit-tested without
+# a full install -- this mapping decides which side wins a conflict and where
+# the overwritten copy lands, which is too important to reach only through an
+# integration test.
+prf_conflict_policy() {   # <profile> <mount-root> <cache-root>
+  case "$(profile_get "$1" CONFLICT)" in
+    ""|remote)
+      printf '# the live mount is canonical\n%s\n' "$2" ;;
+    local)
+      printf '# the local cache wins conflicts (CONFLICT=local); NOTE the'
+      printf ' overwritten copy then lands on the REMOTE\n%s\n' "$3" ;;
+    newer)
+      printf '# the newer mtime wins conflicts (CONFLICT=newer); when the'
+      printf ' CACHE is newer the overwritten copy lands on the REMOTE\n'
+      printf 'newer\n' ;;
+    *)
+      log_warn "profile '$1': unknown CONFLICT"\
+               "'$(profile_get "$1" CONFLICT)'; using 'remote'"
+      printf '# the live mount is canonical\n%s\n' "$2" ;;
+  esac
+}
+
+# DELETE=never. MEASURED behaviour, and the comment here used to claim the
+# opposite: nodeletion does NOT restore the missing copy. It stops the deletion
+# propagating, then leaves the path an unresolved conflict that FAILS every
+# pass until a human settles it. That is defensible -- you asked for deletions
+# never to propagate, so charon will not guess which side you meant -- but it
+# is not what "never delete" sounds like.
+render_prf_delete() {   # <profile> <mount-root> <cache-root>
+  [ "$(profile_get "$1" DELETE)" = never ] || return 0
+  printf '# DELETE=never: a deletion is not propagated either way. It becomes\n'
+  printf '# an unresolved conflict until a human settles it.\n'
+  printf 'nodeletion = %s\n' "$2" "$3"
+}
+
+# IGNORE, in charon's spelling: a pattern containing '/' is a path relative to
+# the root, anything else matches that name at any depth.
+render_prf_ignores() {   # <profile>
+  profile_get_all "$1" IGNORE | while IFS= read -r _ig; do
+    [ -n "$_ig" ] || continue
+    case "$_ig" in
+      */*) printf 'ignore = Path %s\n' "$_ig" ;;
+      *)   printf 'ignore = Name %s\n' "$_ig" ;;
+    esac
+  done
+}
+
+# TIER 2, the escape hatch: a verbatim file included as-is, UNSUPPORTED. It
+# exists so Tier 1 never has to grow a knob per engine preference. Emitted only
+# when the file exists, because unison errors on a missing include -- so
+# creating one is a config-time act that `check` reports as prf drift until
+# `install` regenerates. That visibility is the point, not a wart.
+render_prf_local() {   # <profile>
+  [ -f "$UNISON_DIR/charon-$1.prf.local" ] || return 0
+  printf '# Tier 2 escape hatch, included verbatim and UNSUPPORTED:\n'
+  printf 'include charon-%s.prf.local\n' "$1"
+}
+
+# The pair of roots a profile reconciles, as "MOUNT_ROOT|CACHE_ROOT|LABEL",
+# or a failure with the reason said out loud.
+resolve_profile_roots() {   # <profile>
   _src=$(profile_source_name "$1")
   if [ -z "$_src" ]; then
     log_error "profile '$1' names no source (set SOURCE=, or the legacy"\
               "SUBTREE=)"
     return 1
   fi
-  _sub=$(profile_subtree "$1")
-
-  # Resolve the SOURCE before anything else, so an undefined one is reported as
+  # Resolve the SOURCE before the traits, so an undefined one is reported as
   # undefined. Checking traits first says "source X has no traits" about a
-  # source that does not exist, which sends the reader off to probe nothing.
+  # source that does not exist, sending the reader off to probe nothing.
   _mnt=$(source_get "$_src" MOUNT); _cch=$(source_get "$_src" CACHE_ROOT)
   if [ -z "$_mnt" ] || [ -z "$_cch" ]; then
     log_error "profile '$1' names source '$_src', which is not defined:"\
@@ -553,33 +613,27 @@ render_prf() {   # <profile>
               "'default'."
     return 1
   fi
-
-  # Traits are a RENDER-time input. Refuse to render without them rather than
-  # guess: a guessed backend fact is exactly what cost two machines weeks.
+  # Traits are a RENDER-time input. Refuse rather than guess: a guessed backend
+  # fact is exactly what cost two machines weeks.
   if ! traits_present "$_src"; then
     log_error "source '$_src' has no measured traits; cannot render a profile."
     log_error "run: charon source probe $_src"
     return 1
   fi
-  _mroot=$_mnt${_sub:+/$_sub}
-  _croot=$_cch${_sub:+/$_sub}
-  _label="charon $(source_get "$_src" REMOTE):$_sub"
+  _sub=$(profile_subtree "$1")
+  printf '%s|%s|charon %s:%s' "$_mnt${_sub:+/$_sub}" "$_cch${_sub:+/$_sub}" \
+    "$(source_get "$_src" REMOTE)" "$_sub"
+}
 
-  # TIER 1, mapped onto unison HERE and nowhere else. Profiles speak charon's
-  # vocabulary; if they spoke unison's, unison would BE the interface and could
-  # never be replaced. With none of these set the output is byte-identical to
-  # the previous template, so an existing install does not drift.
-  _note="# the live mount is canonical"; _prefer=$_mroot
-  case "$(profile_get "$1" CONFLICT)" in
-    ""|remote) : ;;
-    local) _note="# the local cache wins conflicts (CONFLICT=local); NOTE the"
-           _note="$_note overwritten copy then lands on the REMOTE"
-           _prefer=$_croot ;;
-    newer) _note="# the newer mtime wins conflicts (CONFLICT=newer)"
-           _prefer=newer ;;
-    *) log_warn "profile '$1': unknown CONFLICT"\
-                "'$(profile_get "$1" CONFLICT)'; using 'remote'" ;;
-  esac
+render_prf() {   # <profile>
+  _rr=$(resolve_profile_roots "$1") || return 1
+  _mroot=${_rr%%|*}; _rest=${_rr#*|}
+  _croot=${_rest%%|*}; _label=${_rest#*|}
+  _src=$(profile_source_name "$1")
+
+  _cp=$(prf_conflict_policy "$1" "$_mroot" "$_croot")
+  _note=$(printf '%s\n' "$_cp" | head -1)
+  _prefer=$(printf '%s\n' "$_cp" | tail -1)
 
   extract_section "prf:charon" \
     | sed -e "s|@MOUNT_ROOT@|$_mroot|g" \
@@ -588,36 +642,10 @@ render_prf() {   # <profile>
           -e "s|@PREFER_NOTE@|$_note|" \
           -e "s|@PREFER@|$_prefer|"
 
-  render_prf_traits "$_src"
-
-  # DELETE=never: a deletion on either replica is not mirrored. The file is
-  # restored from the other side on the next pass, since with no deletion to
-  # propagate unison sees a one-sided file and copies it back.
-  if [ "$(profile_get "$1" DELETE)" = never ]; then
-    printf '# DELETE=never: deletions are never propagated, either way\n'
-    printf 'nodeletion = %s\n' "$_mroot" "$_croot"
-  fi
-
-  # IGNORE: charon's own spelling, translated here. A pattern containing '/' is
-  # a path relative to the root; anything else matches a name at any depth.
-  profile_get_all "$1" IGNORE | while IFS= read -r _ig; do
-    [ -n "$_ig" ] || continue
-    case "$_ig" in
-      */*) printf 'ignore = Path %s\n' "$_ig" ;;
-      *)   printf 'ignore = Name %s\n' "$_ig" ;;
-    esac
-  done
-
-  # TIER 2, the escape hatch: a verbatim file included as-is, UNSUPPORTED. It
-  # exists so Tier 1 does not have to grow a knob for every preference the
-  # engine happens to have. Emitted only when the file exists, because unison
-  # errors on a missing include -- so creating one is a config-time act that
-  # `check` reports as prf drift until `install` regenerates. That is the
-  # intended workflow, not a wart: an escape hatch should be visible.
-  if [ -f "$UNISON_DIR/charon-$1.prf.local" ]; then
-    printf '# Tier 2 escape hatch, included verbatim and UNSUPPORTED:\n'
-    printf 'include charon-%s.prf.local\n' "$1"
-  fi
+  render_prf_traits  "$_src"
+  render_prf_delete  "$1" "$_mroot" "$_croot"
+  render_prf_ignores "$1"
+  render_prf_local   "$1"
 }
 
 # Probe any source a profile uses that has no traits yet. Install is the

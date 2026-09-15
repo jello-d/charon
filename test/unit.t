@@ -161,6 +161,29 @@ _is "$(_agg 75 1)"   "1"  "a fault outranks a skip"
 _is "$(_agg 1 75)"   "1"  "a fault is not downgraded by a later skip"
 _is "$(_agg 0 75 1)" "1"  "worst-of-three"
 
+#### prf_conflict_policy: which side wins, and where the copy lands ####
+# Split out of render_prf precisely so it can be tested here. This mapping
+# decides both, and "where the overwritten copy lands" is the difference
+# between resolving a conflict locally and quietly writing to the remote.
+printf 'SOURCE=nas:D\n' > "$T/cfg/profiles.d/cf.conf"
+_note() { prf_conflict_policy cf /M /C | head -1; }
+_pref() { prf_conflict_policy cf /M /C | tail -1; }
+_is "$(_pref)" "/M" "the default prefers the source"
+printf 'SOURCE=nas:D\nCONFLICT=remote\n' > "$T/cfg/profiles.d/cf.conf"
+_is "$(_pref)" "/M" "CONFLICT=remote prefers the source"
+printf 'SOURCE=nas:D\nCONFLICT=local\n' > "$T/cfg/profiles.d/cf.conf"
+_is "$(_pref)" "/C" "CONFLICT=local prefers the cache"
+_note | grep -q 'REMOTE' || fail "CONFLICT=local must warn about the remote"
+printf 'SOURCE=nas:D\nCONFLICT=newer\n' > "$T/cfg/profiles.d/cf.conf"
+_is "$(_pref)" "newer" "CONFLICT=newer defers to the mtime"
+_note | grep -q 'REMOTE' \
+  || fail "CONFLICT=newer must carry the same remote-copy caveat"
+# an unknown value must FALL BACK, not silently produce an empty prefer, which
+# would make unison refuse the profile outright
+printf 'SOURCE=nas:D\nCONFLICT=nonsense\n' > "$T/cfg/profiles.d/cf.conf"
+_is "$(_pref 2>/dev/null)" "/M" "an unknown CONFLICT falls back to the source"
+rm -f "$T/cfg/profiles.d/cf.conf"
+
 #### human_age: "now" is a PARAMETER, so the answer is pinnable ####
 # Taking the clock as an argument is the whole testability trick here: a
 # function that calls date() internally can only be tested by racing it.
