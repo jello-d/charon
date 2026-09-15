@@ -34,7 +34,24 @@ _c install >/dev/null 2>&1 || fail "charon install (both halves) errored"
 [ -f "$XDG_CONFIG_HOME/systemd/user/charon-mount.service" ] \
   || fail "charon install did not install the MOUNT half too"
 
+# status is a HUMAN view, distinct from check's machine verdict: it must never
+# fail, never probe (a probe writes), and never mutate anything.
 _c status >/dev/null 2>&1 || fail "charon status errored"
+out=$(_c status 2>&1)
+printf '%s\n' "$out" | grep -q "source 'default'" || fail "status: no source"
+printf '%s\n' "$out" | grep -q "profile 'docs'"   || fail "status: no profile"
+printf '%s\n' "$out" | grep -qi 'last run'        || fail "status: no outcome"
+printf '%s\n' "$out" | grep -qi 'policy'          || fail "status: no policy"
+printf '%s\n' "$out" | grep -qi 'traits'          || fail "status: no traits"
+# it must report a BROKEN source rather than erroring on it
+_snap=$(cat "$T/.local/state/charon/traits/default" 2>/dev/null || :)
+rm -f "$T/.local/state/charon/traits/default"
+_c status >/dev/null 2>&1 || fail "status errored on a source with no traits"
+_c status 2>&1 | grep -qi 'traits: NONE' \
+  || fail "status did not flag the missing traits"
+printf '%s' "$_snap" > "$T/.local/state/charon/traits/default"
+# and it must not have written anything into the source while looking
+[ -e "$T/testremote/.charon-probe" ] && fail "status PROBED; it must not" || :
 _c source list | grep -qx default || fail "charon source list"
 _c sync docs >/dev/null 2>&1 || fail "charon sync <profile> errored"
 

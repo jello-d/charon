@@ -86,8 +86,13 @@ grep -q '\[FAIL\].*charon-docs.prf DIFFERS' "$T/chk2.out" \
 
 # 6) NO profile == no generation (a bare config dir is inert, not an error)
 rm -f "$XDG_CONFIG_HOME/charon/profiles.d/docs.conf"
+# `config` is the retired name for `status`; both must still work, and an
+# empty config is inert rather than an error.
 PATH="$T/bin:$PATH" sh "$HERE/bin/charon" sync config >"$T/cfg.out" 2>&1 \
   || fail "config errored with no profiles"
-grep -qi 'none' "$T/cfg.out" || fail "config did not note the empty profile set"
+PATH="$T/bin:$PATH" sh "$HERE/bin/charon" status >/dev/null 2>&1 \
+  || fail "status errored with no profiles"
+grep -qi 'no profiles configured' "$T/cfg.out" \
+  || fail "status did not note the empty profile set"
 
 pass "profile config -> prf + timer + service"

@@ -161,6 +161,32 @@ _is "$(_agg 75 1)"   "1"  "a fault outranks a skip"
 _is "$(_agg 1 75)"   "1"  "a fault is not downgraded by a later skip"
 _is "$(_agg 0 75 1)" "1"  "worst-of-three"
 
+#### human_age: "now" is a PARAMETER, so the answer is pinnable ####
+# Taking the clock as an argument is the whole testability trick here: a
+# function that calls date() internally can only be tested by racing it.
+_N=1000000000
+_is "$(human_age 0 "$_N")"             "never"         "no timestamp"
+_is "$(human_age "" "$_N")"            "never"         "empty timestamp"
+_is "$(human_age $((_N - 5)) "$_N")"   "5s ago"        "seconds"
+_is "$(human_age $((_N - 59)) "$_N")"  "59s ago"       "just under a minute"
+_is "$(human_age $((_N - 60)) "$_N")"  "1m ago"        "exactly a minute"
+_is "$(human_age $((_N - 3599)) "$_N")" "59m ago"      "just under an hour"
+_is "$(human_age $((_N - 3600)) "$_N")" "1h ago"       "exactly an hour"
+_is "$(human_age $((_N - 86399)) "$_N")" "23h ago"     "just under a day"
+_is "$(human_age $((_N - 86400)) "$_N")" "1d ago"      "exactly a day"
+_is "$(human_age $((_N + 60)) "$_N")"  "in the future" "a clock that went back"
+
+#### duration_secs: the systemd time spans a profile may use ####
+_is "$(duration_secs 10m)"       "600"    "minutes"
+_is "$(duration_secs 30min)"     "1800"   "the long minute spelling"
+_is "$(duration_secs 1h)"        "3600"   "hours"
+_is "$(duration_secs 90s)"       "90"     "seconds"
+_is "$(duration_secs 2d)"        "172800" "days"
+_is "$(duration_secs 1w)"        "604800" "weeks"
+_is "$(duration_secs '1h 30min')" "5400"  "a compound span"
+_is "$(duration_secs 45)"        "45"     "a bare number is seconds"
+_is "$(duration_secs '')"        "0"      "empty is zero, not an error"
+
 #### the PROBE primitives: measurement code, tested by measuring ####
 # These decide every backend-derived pref, so a wrong answer here is a wrong
 # profile. One of them has already shipped a real bug: probe_times compared a
