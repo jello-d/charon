@@ -110,9 +110,13 @@ which side wins when both changed:
 .BR local " (the overwritten copy then lands on the REMOTE), or " newer .
 .TP
 .B DELETE
-.BR propagate " (default) or " never ,
-where a deletion is never mirrored and a file removed on one side is restored
-from the other on the next pass.
+.BR propagate " (default) or " never .
+With
+.B never
+a deletion is not propagated, so the far copy survives, but the path becomes an
+unresolved conflict and the profile FAILS every pass until a human settles it
+by hand \(em restoring the file, or deleting it on both sides. It does NOT
+silently restore the missing copy.
 .PP
 charon ships
 .IR share/charon/example.conf " and " share/charon/example-source.conf ;

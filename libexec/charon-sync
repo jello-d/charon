@@ -706,6 +706,12 @@ gate_profile() {   # <profile> <service-name>
 # bound a genuinely WEDGED run, so it sits far above any healthy pass.
 run_unison_guarded() {   # <unison-profile>
   _up=$1
+  # Tell unison WHERE the profile is. charon has always had UNISON_DIR for
+  # where it WRITES profiles, but never passed it on, so the two agreed only
+  # because both default to ~/.unison. Override UNISON_DIR and charon would
+  # write a profile unison never reads, then fail with a usage message that
+  # names nothing. Export it so the writer and the reader cannot disagree.
+  UNISON=$UNISON_DIR; export UNISON
   _inh="systemd-inhibit --what=sleep --who=charon-sync --mode=block"
   set -- timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-3600}" \
     unison "$_up" -auto -batch -ui text -silent

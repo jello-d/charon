@@ -68,7 +68,7 @@ policy:
     SEED_FULL_ORDER=10         # join the background full seed, ascending
     #IGNORE=*.tmp              # exclude; repeatable
     #CONFLICT=remote           # remote (default) | local | newer
-    #DELETE=propagate          # propagate (default) | never
+    #DELETE=propagate          # propagate (default) | never (see note)
 
 Several profiles normally share one source, which is why the two are separate:
 the mount path and the remote name are one fact, and putting them on the
@@ -78,6 +78,12 @@ profile would let two profiles disagree about the same tree.
 reconciler in one place, so the engine underneath stays replaceable. For
 anything beyond them, a verbatim `~/.unison/charon-<name>.prf.local` is
 included if present, and is explicitly unsupported.
+
+`DELETE=never` stops a deletion reaching the far side, and is blunter than it
+sounds: the far copy survives, but the path becomes an unresolved conflict and
+the profile **fails every pass** until you settle it by hand. It does not
+silently restore the missing copy. That fault is the point, since you asked for
+deletions never to propagate and charon will not guess which side you meant.
 
 There is deliberately **no working-link key**: charon manages a cache, and
 where a desktop surfaces that cache is layout an integrator owns.
