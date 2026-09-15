@@ -79,4 +79,31 @@ printf '%s\n' "$out" | grep -qi 'empty' \
   || fail "the dead-source refusal did not say why ($out)"
 [ -f "$T/nascache/Docs/keep.txt" ] || fail "the guard let cache data be lost"
 
+# --- no systemd must be LOUD, not silently successful ---
+# charon schedules through systemd --user. Without it, install still writes the
+# unit files (they are just text) and used to exit 0 having scheduled nothing,
+# which is silent success on an error path.
+# Removing the stub is NOT enough: the real systemctl is still on /usr/bin, so
+# `command -v` finds it and the no-systemd path never runs. Build a PATH that
+# genuinely lacks it, by mirroring the system bins minus the two.
+rm -f "$T/bin/systemctl" "$T/bin/systemd-run"   # the stubs, first on PATH
+mkdir -p "$T/nosd"
+for _f in /usr/bin/* /bin/*; do
+  _b=${_f##*/}
+  case "$_b" in systemctl|systemd-run) continue ;; esac
+  ln -sf "$_f" "$T/nosd/$_b" 2>/dev/null || :
+done
+command -v systemctl >/dev/null 2>&1 \
+  || fail "harness broken: no systemctl on the normal PATH at all"
+( PATH="$T/nosd"; command -v systemctl >/dev/null 2>&1 ) \
+  && fail "harness broken: systemctl still reachable without /usr/bin"
+_nosd() { PATH="$T/bin:$T/nosd" sh "$HERE/bin/charon" "$@"; }
+out=$(_nosd install 2>&1) || :
+printf '%s\n' "$out" | grep -qi 'NOTHING IS SCHEDULED' \
+  || fail "install said nothing about systemd being absent ($out)"
+_nosd check >/dev/null 2>&1 \
+  && fail "check passed with no scheduler at all" || :
+_nosd check 2>&1 | grep -qi 'systemctl not found' \
+  || fail "check did not name the missing scheduler"
+
 pass "PROVIDER=none: gates, syncs, seeds and refuses, with no rclone"

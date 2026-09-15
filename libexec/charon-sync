@@ -82,6 +82,13 @@ LOCKFILE="$LOCKDIR/charon-sync.lock"
 # and cannot mistake it for work done.
 EX_SKIP=75
 
+# charon SCHEDULES through systemd --user. That is an assumption, not a law,
+# and when it does not hold the failure must be loud: install still writes the
+# unit files (they are just text) but nothing reloads or enables them, so
+# without this the install reported success while NOTHING would ever run.
+# Silent success on an error path is the bug this project keeps finding.
+have_systemd() { command -v systemctl >/dev/null 2>&1; }
+
 # Optional fault-notify seam: a command supporting `flag <id> <msg>` / `clear
 # <id>` / `list`. Empty (default) = no notify (soft). An integrator sets it
 # (e.g. CHARON_NOTIFY=intervention-required); install bakes it into the units.
@@ -553,6 +560,13 @@ setup_systemd_units() {
     render_timer "$p" >"$SYSTEMD_USER_DIR/charon-sync-$p.timer"
   done
 
+  if ! have_systemd; then
+    log_warn "systemctl not found: the unit files are WRITTEN but NOTHING IS"\
+             "SCHEDULED. charon will not sync on its own."
+    log_warn "run '${APP_NAME%% *} sync' from your own scheduler (cron, a"\
+             "supervisor, by hand), or install on a systemd --user session."
+    return 0
+  fi
   log_trace "reloading systemd user daemon"
   systemctl --user daemon-reload
   log_trace "enabling timers"
@@ -944,6 +958,13 @@ do_uninstall() {
 do_check() {
   echo "== charon-sync systemd check =="
   _rc=0
+  if ! have_systemd; then
+    echo "  [FAIL] systemctl not found: charon schedules through systemd"\
+         "--user, so nothing here is running automatically."
+    echo "         The reconciler config is still valid; drive"\
+         "'${APP_NAME%% *} sync' from your own scheduler."
+    return 1
+  fi
   check_service_template || _rc=1
   _any=
   for p in $(profile_names); do
