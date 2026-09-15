@@ -99,10 +99,19 @@ do_status() {   # <source>
       fi
       mount | grep -q "on $_m "; return $? ;;
     *)
-      # Something else owns the tree. It is NOT required to be a mountpoint --
-      # a plain directory is a legitimate BYO source -- so existence is the
-      # test, and check_source_sane covers the dangerous empty case.
-      [ -d "$_m" ] ;;
+      # Something else owns the tree, so charon cannot assume it is a mount --
+      # a plain directory is a legitimate BYO source. But if it WAS a
+      # mountpoint when we measured it, it must still be one: an unmounted
+      # mountpoint is an existing, EMPTY directory, and an existence test would
+      # call a vanished NFS or fstab mount perfectly healthy.
+      [ -d "$_m" ] || return 1
+      if [ "$(traits_get "$1" MOUNTPOINT)" = yes ]; then
+        if command -v mountpoint >/dev/null 2>&1; then
+          mountpoint -q "$_m"; return $?
+        fi
+        mount | grep -q "on $_m "; return $?
+      fi
+      return 0 ;;
   esac
 }
 
@@ -125,10 +134,14 @@ do_health() {   # <source>
       esac
       echo offline; return 2 ;;
     *)
-      # No API to ask. The generic answer is the honest one: the tree is either
-      # readable or it is not.
-      do_status "$1" && { echo online; return 0; }
-      echo offline; return 2 ;;
+      # There is no remote API to ask, so there is no such thing as a
+      # TRANSIENT outage here: a local tree is either present or it is broken.
+      # Report online unconditionally and let do_status decide liveness, which
+      # the caller turns into a FAULT. Returning "offline" instead would map a
+      # vanished fstab or NFS mount onto the SKIP path -- no flag raised, no
+      # failed unit, the box quietly not syncing -- and a mount that is gone
+      # is not going to come back on its own the way a network blip does.
+      echo online; return 0 ;;
   esac
 }
 
@@ -216,6 +229,20 @@ probe_links() {   # <dir> -> yes | no
 # remount, so this is derived and SAID to be derived.
 probe_fstype() { stat -f -c %T "$1" 2>/dev/null || printf 'unknown'; }
 
+# Was the source a MOUNTPOINT when we measured it? Recorded as a trait rather
+# than declared, for the same reason as the rest: it is a fact about the
+# source. It is also the only way to tell a legitimate plain-directory source
+# from a MOUNT THAT HAS VANISHED -- an unmounted mountpoint is still an
+# existing, empty directory, so an existence test calls it healthy while the
+# tree it should expose is gone.
+probe_mountpoint() {   # <dir> -> yes | no
+  if command -v mountpoint >/dev/null 2>&1; then
+    mountpoint -q "$1" && printf 'yes' || printf 'no'
+  else
+    mount | grep -q "on $1 " && printf 'yes' || printf 'no'
+  fi
+}
+
 do_probe() {   # <source>
   _src=$1
   _mnt=$(source_get "$_src" MOUNT)
@@ -230,7 +257,8 @@ do_probe() {   # <source>
     # guessing the rest from a tree we cannot write would be fabrication.
     log_warn "source '$_src' is NOT WRITABLE at '$_mnt'"
     log_warn "a read-only source cannot support two-way sync; recording that"
-    _write_traits "$_src" "WRITABLE=no" "FSTYPE=$(probe_fstype "$_mnt")"
+    _write_traits "$_src" "WRITABLE=no" "FSTYPE=$(probe_fstype "$_mnt")" \
+      "MOUNTPOINT=$(probe_mountpoint "$_mnt")"
     return 0
   fi
 
@@ -240,12 +268,13 @@ do_probe() {   # <source>
   _perm=$(probe_perms "$_pd") || { _probe_failed "$_src" perms; return 1; }
   _link=$(probe_links "$_pd")
   _fsty=$(probe_fstype "$_mnt")
+  _mp=$(probe_mountpoint "$_mnt")
   rmdir "$_pd" 2>/dev/null || rm -rf "$_pd" 2>/dev/null || :
 
   _write_traits "$_src" "WRITABLE=yes" "CASE=$_case" "TIMES=$_time" \
-    "PERMS=$_perm" "LINKS=$_link" "FSTYPE=$_fsty"
+    "PERMS=$_perm" "LINKS=$_link" "FSTYPE=$_fsty" "MOUNTPOINT=$_mp"
   log_info "source '$_src': case=$_case times=$_time perms=$_perm" \
-           "links=$_link fstype=$_fsty"
+           "links=$_link fstype=$_fsty mountpoint=$_mp"
 }
 
 _probe_failed() {   # <source> <what>
