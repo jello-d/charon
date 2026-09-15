@@ -79,6 +79,31 @@ printf '%s\n' "$out" | grep -qi 'empty' \
   || fail "the dead-source refusal did not say why ($out)"
 [ -f "$T/nascache/Docs/keep.txt" ] || fail "the guard let cache data be lost"
 
+# --- config catastrophes must be REFUSED, not generated ---
+# charon happily accepted MOUNT == CACHE_ROOT and even wrote a profile with the
+# SAME ROOT TWICE: unison reconciling a tree against itself. A cache nested
+# inside the tree it caches is the same class, syncing its own contents
+# forever. Neither is a misconfiguration to warn about; both destroy data.
+cp "$CFG/sources.d/nas.conf" "$T/nas.conf.bak"
+printf 'PROVIDER=none\nMOUNT=%s/nas\nCACHE_ROOT=%s/nas\n' "$T" "$T" \
+  > "$CFG/sources.d/nas.conf"
+_c check 2>&1 | grep -qi 'same tree or nested' \
+  || fail "MOUNT == CACHE_ROOT was not reported"
+_c install >/dev/null 2>&1 && fail "install accepted an overlapping source" || :
+printf 'PROVIDER=none\nMOUNT=%s/nas\nCACHE_ROOT=%s/nas/inner\n' "$T" "$T" \
+  > "$CFG/sources.d/nas.conf"
+_c check 2>&1 | grep -qi 'same tree or nested' \
+  || fail "a cache nested inside its source was not reported"
+cp "$T/nas.conf.bak" "$CFG/sources.d/nas.conf"
+
+# two profiles on ONE pair of trees race, each with its own archive
+cp "$CFG/profiles.d/docs.conf" "$CFG/profiles.d/dup.conf"
+_c check 2>&1 | grep -qi 'more than one profile reconciles' \
+  || fail "a duplicated (source, subtree) target was not reported"
+rm -f "$CFG/profiles.d/dup.conf"
+_c check 2>&1 | grep -qi 'config is coherent' \
+  || fail "a clean config was not reported as coherent"
+
 # --- the multi-remote limitation must be DETECTED, not just documented ---
 # charon has ONE mount unit, so a second rclone-backed source would never be
 # mounted. That is a deliberate scope decision, but a source that silently

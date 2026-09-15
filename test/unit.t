@@ -132,4 +132,15 @@ render_prf_traits s | grep -qx 'times = false' \
 render_prf_traits s | grep -qx 'ignorecase = false' \
   || fail "with no CASE trait the default must be case-SENSITIVE"
 
+#### paths_overlap: catastrophes, and things that merely look like them ####
+paths_overlap /a/b /a/b       || fail "identical paths must overlap"
+paths_overlap /a/b/ /a/b      || fail "a trailing slash must not hide equality"
+paths_overlap /a /a/b         || fail "a parent contains its child"
+paths_overlap /a/b /a         || fail "overlap is symmetric"
+paths_overlap /a/b /a/c       && fail "siblings do not overlap" || :
+# the near-miss a naive prefix test gets WRONG: /a/bc is not in /a/b
+paths_overlap /a/b /a/bc      && fail "/a/bc is not inside /a/b" || :
+paths_overlap /a/bcd /a/b     && fail "prefix is not containment" || :
+paths_overlap "" /a           && fail "an empty path cannot overlap" || :
+
 pass "profile/source parsing, tilde handling, dir tests, trait derivation"

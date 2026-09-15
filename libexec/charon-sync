@@ -226,6 +226,56 @@ extract_section() {
   ' "$_self"
 }
 
+#### config sanity ####
+# Two roots that are the same tree, or nested one inside the other, are not a
+# misconfiguration but a catastrophe: unison would reconcile a tree against
+# ITSELF, or the cache would live inside the tree it caches and sync its own
+# contents into themselves, without end. charon accepted both silently and
+# even generated a profile with the same root listed twice.
+paths_overlap() {   # <a> <b>  -> 0 if equal, or either contains the other
+  _pa=${1%/}; _pb=${2%/}
+  [ -n "$_pa" ] && [ -n "$_pb" ] || return 1
+  [ "$_pa" = "$_pb" ] && return 0
+  case "$_pa/" in "$_pb"/*) return 0 ;; esac
+  case "$_pb/" in "$_pa"/*) return 0 ;; esac
+  return 1
+}
+
+# Validate the CONFIG as a whole, which no per-profile check can do: overlap is
+# a property of a source, and a duplicate target is a property of a PAIR of
+# profiles. Prints its own markers; 0 clean / 1 problems found.
+check_config_sanity() {
+  _cs=0
+  for _s in $(source_names); do
+    _m=$(source_get "$_s" MOUNT); _c=$(source_get "$_s" CACHE_ROOT)
+    [ -n "$_m" ] && [ -n "$_c" ] || continue
+    if paths_overlap "$_m" "$_c"; then
+      echo "  [FAIL] source '$_s': MOUNT and CACHE_ROOT are the same tree or"\
+           "nested ('$_m' vs '$_c')."
+      echo "         That reconciles a tree against itself, or caches a tree"\
+           "inside itself. Refusing is the only safe answer."
+      _cs=1
+    fi
+  done
+  # Two profiles reconciling the SAME pair would run two unison profiles, each
+  # with its own archive, over one pair of trees -- they fight, and which wins
+  # depends on timer jitter.
+  _keys=
+  for _p in $(profile_names); do
+    _k=$(profile_source_name "$_p"):$(profile_subtree "$_p")
+    [ "$_k" = ":" ] && continue
+    if printf '%s\n' "$_keys" | grep -qxF "$_k"; then
+      echo "  [FAIL] more than one profile reconciles '$_k'. Two profiles on"\
+           "one pair of trees race, each with its own archive."
+      _cs=1
+    fi
+    _keys=$(printf '%s\n%s' "$_keys" "$_k")
+  done
+  [ "$_cs" = 0 ] && echo "  [OK]   config is coherent (no overlap, no"\
+                        "duplicate targets)"
+  return $_cs
+}
+
 #### helpers ####
 check_if_mounted() {
   if command -v mountpoint >/dev/null 2>&1; then
@@ -804,6 +854,11 @@ do_install() {
   check_install_prereqs
   install_packages
   if [ -z "$(profile_names)" ]; then no_profiles_hint; fi
+  if ! check_config_sanity >/dev/null 2>&1; then
+    log_error "refusing to install from an incoherent config:"
+    check_config_sanity | sed 's/^/  /' >&2
+    exit 2
+  fi
   ensure_source_traits
   setup_unison_profiles
   setup_systemd_units
@@ -968,6 +1023,10 @@ do_uninstall() {
 do_check() {
   echo "== charon-sync systemd check =="
   _rc=0
+  # Config coherence FIRST, and before the systemd gate: an overlapping source
+  # or a duplicated target is wrong whether or not there is a scheduler, and it
+  # is the kind of wrong that destroys data rather than merely not running.
+  check_config_sanity || _rc=1
   if ! have_systemd; then
     echo "  [FAIL] systemctl not found: charon schedules through systemd"\
          "--user, so nothing here is running automatically."
@@ -975,6 +1034,7 @@ do_check() {
          "'${APP_NAME%% *} sync' from your own scheduler."
     return 1
   fi
+
   check_service_template || _rc=1
   _any=
   for p in $(profile_names); do
