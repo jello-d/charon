@@ -93,19 +93,23 @@ _charon source probe gone >/dev/null 2>&1 \
 # drift, which is the same lesson the prf taught the hard way.
 _charon install >/dev/null 2>&1
 SD=$XDG_CONFIG_HOME/systemd/user
-for g in "$SD/charon-mount.service" "$SD/charon-sync@.service" \
+for g in "$SD/charon-mount@.service" "$SD/charon-sync@.service" \
          "$SD/charon-sync-docs.timer" "$T/.unison/charon-docs.prf"; do
   [ -f "$g" ] || fail "expected generated artifact missing: $g"
   cp "$g" "$T/g.bak"
   printf '# sneaky hand edit\n' >> "$g"
-  _charon check >/dev/null 2>&1 \
-    && fail "check is BLIND to a hand edit of $(basename "$g")" || :
+  # Assert THIS artifact is NAMED as drifted. Asserting only that check exits
+  # non-zero proves nothing here, because the stubbed systemctl reports no
+  # registered unit files and so makes it non-zero anyway. That weaker form
+  # was the assertion until 2026-09-15, and mutation testing showed it still
+  # passed with the mount template's diff removed outright: a test that could
+  # not fail, guarding the exact blind spot it was written for.
+  _charon check 2>&1 | grep -q "\[FAIL\].*$(basename "$g").*DIFFERS" \
+    || fail "check is BLIND to a hand edit of $(basename "$g")"
   cp "$T/g.bak" "$g"
 done
-# (not asserting check's exit: the stubbed systemctl reports no registered
-# unit files, so it is non-zero in the sandbox for unrelated reasons)
 _charon check >"$T/gen.out" 2>&1 || :
-for want in charon-mount.service charon-sync@.service \
+for want in charon-mount@.service charon-sync@.service \
             charon-sync-docs.timer charon-docs.prf; do
   grep -q "\[OK\].*$want matches" "$T/gen.out" \
     || fail "$want not reported as matching after restore"

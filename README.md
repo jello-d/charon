@@ -57,6 +57,12 @@ A **source** (`sources.d/<name>.conf`) is one tree to cache, and how it exists:
 A source named `default` is **implicit**, derived from `CHARON_REMOTE`, so a
 single-remote install needs no `sources.d` file at all.
 
+Declare as many sources as you like. Each rclone-backed one gets its own mount
+unit (`charon-mount@<source>.service`), and each profile is ordered after the
+mount of the source it actually draws on, so one box can cache several remotes
+side by side. A `PROVIDER=none` source has no charon-owned unit, by design:
+something else mounts that tree.
+
 A **profile** (`profiles.d/<name>.conf`) is one subtree to reconcile, plus its
 policy:
 

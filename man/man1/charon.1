@@ -92,6 +92,14 @@ Several profiles normally share one source, which is why the two are separate:
 the mount path and the remote name are one fact, and putting them on the
 profile would let two profiles disagree about the same tree.
 .PP
+Any number of sources may be declared. Each rclone-backed source gets its own
+mount unit,
+.IR charon-mount@<source>.service ,
+and each profile is ordered after the mount of the source it draws on, so one
+machine can cache several remotes at once. A
+.B PROVIDER=none
+source gets no unit: something else owns that tree.
+.PP
 There is deliberately no working-link key. charon manages a cache; where a
 desktop surfaces that cache is layout, and layout belongs to the integrator.
 .SS Policy
@@ -204,6 +212,12 @@ the MEASURED backend traits each profile is derived from.
 .TP
 .I ~/.unison/charon-<name>.prf
 the generated Unison profiles.
+.TP
+.I ~/.config/systemd/user/charon-mount@.service
+the mount unit template, instanced once per rclone-backed source.
+.TP
+.I ~/.config/systemd/user/charon-sync@<profile>.service.d/10-source.conf
+generated ordering: binds a profile to its own source's mount unit.
 .SH SEE ALSO
 .BR rclone (1),
 .BR unison (1)

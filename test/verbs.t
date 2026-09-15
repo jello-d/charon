@@ -31,7 +31,7 @@ _c() { PATH="$T/bin:$PATH" sh "$HERE/bin/charon" "$@"; }
 # --- the flattened surface ---
 _c install >/dev/null 2>&1 || fail "charon install (both halves) errored"
 [ -f "$T/.unison/charon-docs.prf" ] || fail "install did not generate the prf"
-[ -f "$XDG_CONFIG_HOME/systemd/user/charon-mount.service" ] \
+[ -f "$XDG_CONFIG_HOME/systemd/user/charon-mount@.service" ] \
   || fail "charon install did not install the MOUNT half too"
 
 # status is a HUMAN view, distinct from check's machine verdict: it must never
@@ -71,9 +71,9 @@ _c sync docs >/dev/null 2>&1 || fail "a profile name was swallowed as a mode"
 svc=$XDG_CONFIG_HOME/systemd/user/charon-sync@.service
 grep -q '^ExecStart=.*/charon sync %i$' "$svc" \
   || fail "the sync unit does not use the flattened verb"
-unit=$XDG_CONFIG_HOME/systemd/user/charon-mount.service
-grep -q '^ExecStart=.*/charon source up default$' "$unit" \
-  || fail "the mount unit does not bring the SOURCE up"
+unit=$XDG_CONFIG_HOME/systemd/user/charon-mount@.service
+grep -q '^ExecStart=.*/charon source up %i$' "$unit" \
+  || fail "the mount template does not bring its instance's SOURCE up"
 
 # ...but a unit carrying the OLD spelling must still run, which is the whole
 # point of the aliases. Simulate a stale unit's ExecStart directly.

@@ -79,20 +79,19 @@ case "${1:-}" in
            # failed on a box that has none. The source has to be up before the
            # sync that uses it is installed, and an integrator should not have
            # to know that, which is why both still happen here.
-           _first=
+           # EVERY rclone-backed source gets its own mount instance. This used
+           # to install the FIRST one and print a note about the rest, which
+           # meant a second remote was configured, given profiles and sync
+           # units, and then never mounted -- a promise the config accepted and
+           # nothing kept.
+           _any=
            for _s in $("$_lib/charon-source" list); do
              [ "$("$_lib/charon-source" provider "$_s")" = rclone ] || continue
-             if [ -n "$_first" ]; then
-               echo "charon: NOTE source '$_s' is also rclone-backed, but" >&2
-               echo "        one mount unit exists today, installed for" >&2
-               echo "        '$_first'; multi-remote mounts are not built." >&2
-               continue
-             fi
-             _first=$_s
+             _any=y
              CHARON_SOURCE=$_s APP_NAME="charon mount" \
                "$_lib/charon-mount" install || exit $?
            done
-           [ -n "$_first" ] \
+           [ -n "$_any" ] \
              || echo "charon: no rclone-backed source; nothing to mount"
            _sync install ;;
   uninstall) shift

@@ -104,10 +104,14 @@ rm -f "$CFG/profiles.d/dup.conf"
 _c check 2>&1 | grep -qi 'config is coherent' \
   || fail "a clean config was not reported as coherent"
 
-# --- the multi-remote limitation must be DETECTED, not just documented ---
-# charon has ONE mount unit, so a second rclone-backed source would never be
-# mounted. That is a deliberate scope decision, but a source that silently
-# never mounts is precisely the asserted-vs-actual gap a check closes.
+# --- a SECOND rclone source is a supported configuration, not a fault ---
+# This block used to assert the opposite: charon had one mount unit with a
+# source baked in, so a second rclone-backed source could never be mounted and
+# check FAILED on sight of one. The unit is a template instanced by source now,
+# so the limit is gone. Keep the assertion inverted rather than deleting it, or
+# nothing here would notice the limit creeping back.
+# The deep wiring (one instance each, per-profile ordering) is multi-remote.t;
+# this only pins that the provider seam ACCEPTS the configuration.
 for _n in one two; do
   cat > "$CFG/sources.d/$_n.conf" <<EOF
 PROVIDER=rclone
@@ -118,8 +122,7 @@ EOF
 done
 out=$(_c check 2>&1) || :
 printf '%s\n' "$out" | grep -qi 'ONE mount unit' \
-  || fail "a second rclone source was not reported as unmountable ($out)"
-_c check >/dev/null 2>&1 && fail "check passed with an unmountable source" || :
+  && fail "the retired one-remote limit is back ($out)" || :
 rm -f "$CFG/sources.d/one.conf" "$CFG/sources.d/two.conf"
 _c check >/dev/null 2>&1 || :   # back to one source
 
