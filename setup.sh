@@ -95,9 +95,23 @@ do_uninstall() {
 
 do_check() {
   echo "== $PKG (rclone mount + unison sync) =="
+  # THREE questions, not one. `command -v` alone answers only "is something
+  # called this on PATH", which a DIFFERENT copy satisfies just as well as the
+  # install being audited: a stale /usr/local/bin/charon, or the pkg clone's,
+  # would report [OK] while this install rotted behind it. That shadowing is
+  # the failure the conventions ban outright, so assert against it here --
+  # installed at all, reachable, and the reachable one is THIS one.
   for _t in "$_root"/bin/*; do _n=$(basename "$_t")
-    if command -v "$_n" >/dev/null 2>&1; then ok "$_n present"
-    else bad "$_n not on PATH"; fi; done
+    _want=$_bin/$_n
+    _got=$(command -v "$_n" 2>/dev/null || true)
+    if [ ! -e "$_want" ]; then
+      bad "$_n not installed ($_want)"
+    elif [ -z "$_got" ]; then
+      bad "$_n installed at $_want but NOT on PATH"
+    elif [ "$(readlink -f "$_got" 2>/dev/null)" \
+         != "$(readlink -f "$_want" 2>/dev/null)" ]; then
+      bad "$_n on PATH is $_got, NOT the installed $_want (shadowed)"
+    else ok "$_n present, and PATH resolves to this install"; fi; done
   if [ -f "$_lib/$PKG/common.sh" ]; then ok "libexec/common.sh installed"
   else bad "libexec/common.sh missing ($_lib/$PKG/common.sh)"; fi
   if [ -f "$_shr/$PKG/example.conf" ]; then ok "share example.conf installed"
