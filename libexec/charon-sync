@@ -141,12 +141,27 @@ EOF
 
 #### profile config ####
 # Names of configured profiles (basename of each *.conf), or nothing.
-profile_names() {
+# EVERY *.conf basename, valid or not, one per line. Read it with
+# `while IFS= read -r`, never `for x in $(...)`: the whole point is to see a
+# name that would word-split, and a $()-loop destroys the evidence before the
+# check can report it.
+profile_names_raw() {
   [ -d "$PROFILES_DIR" ] || return 0
   for _f in "$PROFILES_DIR"/*.conf; do
     [ -f "$_f" ] || continue
     _n=$(basename "$_f"); printf '%s\n' "${_n%.conf}"
   done
+}
+
+# The names charon will ACT on: valid ones only. Filtering here rather than at
+# each call site means no generator can emit a unit for a name systemd cannot
+# express; check_config_sanity is what tells the user their file was skipped,
+# and install refuses on it, so the skip is never silent.
+profile_names() {
+  profile_names_raw | while IFS= read -r _n; do
+    valid_name "$_n" && printf '%s\n' "$_n"
+  done
+  return 0
 }
 
 # Read one KEY from a profile file, literally (nothing executed). A leading ~/
@@ -173,7 +188,10 @@ profile_get_all() {   # <name> <KEY>
 # Configured source names, plus the implicit 'default' when any profile relies
 # on it (so `config` can show what is actually in play, not just what has a
 # file on disk).
-source_names() {
+# Every source name that exists, valid or not. A source name arrives from TWO
+# places and only one of them is a filename: the other is SOURCE=<src>:<sub>
+# inside a profile, which is arbitrary text a user typed.
+source_names_raw() {
   {
     if [ -d "$CHARON_SOURCES_DIR" ]; then
       for _f in "$CHARON_SOURCES_DIR"/*.conf; do
@@ -183,10 +201,17 @@ source_names() {
     fi
     # plus whatever profiles actually reference, which includes the implicit
     # 'default' that has no file on disk
-    for _p in $(profile_names); do
+    profile_names | while IFS= read -r _p; do
       _n=$(profile_source_name "$_p"); [ -n "$_n" ] && printf '%s\n' "$_n"
     done
   } | sort -u
+  return 0
+}
+
+source_names() {
+  source_names_raw | while IFS= read -r _n; do
+    valid_name "$_n" && printf '%s\n' "$_n"
+  done
   return 0
 }
 
@@ -350,6 +375,28 @@ paths_overlap() {   # <a> <b>  -> 0 if equal, or either contains the other
 # profiles. Prints its own markers; 0 clean / 1 problems found.
 check_config_sanity() {
   _cs=0
+  # NAMES FIRST. An unusable name is not a nuance of the config, it is a file
+  # charon cannot act on at all, and saying so before anything else stops the
+  # report reading as though that profile were merely healthy-and-absent.
+  # Collected in a subshell then reported OUT here, so EVERY bad name is named:
+  # reporting from inside the loop would need an exit to set the verdict, and
+  # that stops at the first one.
+  _bad=$(profile_names_raw | while IFS= read -r _bn; do
+           valid_name "$_bn" || printf 'profile|%s\n' "$_bn"
+         done
+         source_names_raw | while IFS= read -r _bn; do
+           valid_name "$_bn" || printf 'source|%s\n' "$_bn"
+         done)
+  if [ -n "$_bad" ]; then
+    printf '%s\n' "$_bad" | while IFS= read -r _e; do
+      [ -n "$_e" ] || continue
+      echo "  [FAIL] ${_e%%|*} '${_e#*|}' is not a usable name. Use only"\
+           "letters, digits, '_' and '-'."
+      echo "         It cannot name a systemd unit, and a name with a space"\
+           "splits into one phantom entry per word. It is being SKIPPED."
+    done
+    _cs=1
+  fi
   for _s in $(source_names); do
     _m=$(source_get "$_s" MOUNT); _c=$(source_get "$_s" CACHE_ROOT)
     [ -n "$_m" ] && [ -n "$_c" ] || continue

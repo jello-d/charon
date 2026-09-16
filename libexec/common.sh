@@ -40,6 +40,24 @@ CHARON_SOURCE=${CHARON_SOURCE:-default}
 CHARON_STATE=${CHARON_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/charon}
 CHARON_TRAITS_DIR=${CHARON_TRAITS_DIR:-$CHARON_STATE/traits}
 
+# A name usable as BOTH a filename component and a systemd unit instance.
+#
+# MEASURED FAILURE, 2026-09-16. Names were never validated, and every caller
+# enumerated them with `for x in $(list)`, which word-splits. A profile file a
+# user could plausibly create, "My Docs.conf", therefore became TWO phantom
+# profiles: charon generated and ARMED charon-sync-My.timer and
+# charon-sync-Docs.timer, generated no prf for the real profile, exited 0, and
+# then check reported both phantoms [OK]. Silent success on an error path, an
+# armed timer for a profile that does not exist, and a tree that never synced.
+# A leading dash is refused too: it reads as an option to half the tools that
+# would receive it.
+valid_name() {
+  case "$1" in
+    ''|-*|*[!A-Za-z0-9_-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 traits_file() { printf '%s/%s' "$CHARON_TRAITS_DIR" "$1"; }
 traits_present() { [ -s "$(traits_file "$1")" ]; }
 

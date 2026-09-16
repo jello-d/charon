@@ -175,6 +175,23 @@ _sync
   || fail "CONFLICT=newer: expected the loser copy on the remote when the
     cache wins -- if this changed, the docs need updating"
 
+#### a SUBTREE with a space really does reconcile ####
+# Not hypothetical: the Drive this was built for contains "Google Earth". The
+# name VALIDATION added 2026-09-16 deliberately does not extend to subtrees --
+# a profile NAME becomes a systemd unit and must be restricted, a subtree is
+# just a path and must not be. This asserts that boundary behaviourally rather
+# than trusting that the prf looked right: unison reads the rest of a prf line
+# as the value, so an unquoted space is correct there and quoting it would be
+# the bug.
+_reset
+printf 'SOURCE=s:D\n' > "$CFG/profiles.d/docs.conf"
+mkdir -p "$T/src/D/Google Earth"
+echo mapped > "$T/src/D/Google Earth/place.kml"
+_c install >/dev/null 2>&1 || fail "install failed (space subtree)"
+_sync
+[ -f "$T/cache/D/Google Earth/place.kml" ] \
+  || fail "a path with a space was not reconciled"
+
 #### the charon-generated profile really does ignore unison's own temps ####
 # The bug that started all of this: a stranded .unison.*.tmp being treated as
 # ordinary content and REPLICATED. Assert it is not copied.
