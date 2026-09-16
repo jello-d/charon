@@ -266,44 +266,40 @@ render_unit() {   # <baked-CHARON_REMOTE>
 _sd=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 TEMPLATE_FILE="$_sd/$SYSTEMD_TEMPLATE"
 
-do_check() {
-  echo "== charon-mount unit check =="
-  _r=0
-  if [ ! -f "$TEMPLATE_FILE" ]; then
-    echo "  [FAIL] $SYSTEMD_TEMPLATE missing (run '${APP_NAME} install')"
-    return 1
-  fi
-  # Diff the template against a re-render carrying the CHARON_REMOTE the unit
-  # ITSELF was installed with, not this shell's. That value is install-time
-  # policy with no equivalent in charon's config, so re-deriving it would
-  # report a perfectly correct unit as drift. Exactly the reasoning that
-  # already applies to the sync unit's baked notify path.
+# Diff the template against a re-render carrying the CHARON_REMOTE the unit
+# ITSELF was installed with, not this shell's. That value is install-time
+# policy with no equivalent in charon's config, so re-deriving it would report
+# a perfectly correct unit as drift. The same reasoning already applies to the
+# sync unit's baked notify path.
+check_mount_template() {
   _baked=$(sed -n 's/^Environment=CHARON_REMOTE=//p' "$TEMPLATE_FILE" | head -1)
   _rt=${TMPDIR:-/tmp}/charon-mount-render.$$
   render_unit "${_baked:-$CHARON_REMOTE}" >"$_rt"
   if diff -q "$_rt" "$TEMPLATE_FILE" >/dev/null 2>&1; then
     echo "  [OK]   $SYSTEMD_TEMPLATE matches this version's template"
-  else
-    echo "  [FAIL] $SYSTEMD_TEMPLATE DIFFERS from this version's"\
-         "template (hand-edited, or stale); run '${APP_NAME} install'"
-    _r=1
+    rm -f "$_rt"; return 0
   fi
-  rm -f "$_rt"
+  echo "  [FAIL] $SYSTEMD_TEMPLATE DIFFERS from this version's"\
+       "template (hand-edited, or stale); run '${APP_NAME} install'"
+  rm -f "$_rt"; return 1
+}
 
-  # The singleton this replaced. If it survives it mounts the SAME tree under a
-  # second unit name, so two managers fight over one mountpoint: whichever
-  # stops last unmounts a tree the other still believes it owns.
-  if systemctl --user list-unit-files 2>/dev/null \
-       | grep -q "^$LEGACY_UNIT"; then
-    echo "  [FAIL] the retired singleton $LEGACY_UNIT is still installed;"\
-         "run '${APP_NAME} install' to sweep it"
-    _r=1
-  fi
+# The singleton this replaced. If it survives it drives the SAME mountpoint
+# under a second unit name, so two managers fight over one tree and whichever
+# stops last unmounts a tree the other still believes it owns.
+check_legacy_singleton() {
+  systemctl --user list-unit-files 2>/dev/null | grep -q "^$LEGACY_UNIT" \
+    || return 0
+  echo "  [FAIL] the retired singleton $LEGACY_UNIT is still installed;"\
+       "run '${APP_NAME} install' to sweep it"
+  return 1
+}
 
-  # EVERY rclone-backed source must have a live instance. The old check could
-  # only ask about one unit, so the interesting question -- is each configured
-  # remote actually mounted -- could not even be posed.
-  _any=
+# EVERY rclone-backed source must have a live instance. The singleton could
+# only ever be asked about one unit, so the interesting question -- is each
+# configured remote actually mounted -- could not even be posed.
+check_source_instances() {
+  _r=0; _any=
   for _s in $(rclone_sources); do
     _any=y
     _u=$(mount_unit "$_s")
@@ -320,9 +316,13 @@ do_check() {
     fi
   done
   [ -n "$_any" ] || echo "  [OK]   no rclone-backed source; nothing to mount"
+  return $_r
+}
 
-  # An instance enabled for a source that no longer exists never starts, and
-  # says nothing about why. Catch the orphan rather than let it rot.
+# An instance enabled for a source that no longer exists never starts, and says
+# nothing about why. Catch the orphan rather than let it rot.
+check_orphan_instances() {
+  _r=0
   for _u in $(systemctl --user list-unit-files 'charon-mount@*.service' \
                 --no-legend 2>/dev/null | awk '{print $1}'); do
     _in=${_u#charon-mount@}; _in=${_in%.service}
@@ -331,7 +331,21 @@ do_check() {
     echo "  [FAIL] $_u is enabled but '$_in' is not an rclone-backed source"
     _r=1
   done
+  return $_r
+}
 
+do_check() {
+  echo "== charon-mount unit check =="
+  if [ ! -f "$TEMPLATE_FILE" ]; then
+    echo "  [FAIL] $SYSTEMD_TEMPLATE missing (run '${APP_NAME} install')"
+    return 1
+  fi
+  # All four run; none short-circuits, so one failure never hides the next.
+  _r=0
+  check_mount_template   || _r=1
+  check_legacy_singleton || _r=1
+  check_source_instances || _r=1
+  check_orphan_instances || _r=1
   return $_r
 }
 

@@ -373,30 +373,33 @@ paths_overlap() {   # <a> <b>  -> 0 if equal, or either contains the other
 # Validate the CONFIG as a whole, which no per-profile check can do: overlap is
 # a property of a source, and a duplicate target is a property of a PAIR of
 # profiles. Prints its own markers; 0 clean / 1 problems found.
-check_config_sanity() {
-  _cs=0
-  # NAMES FIRST. An unusable name is not a nuance of the config, it is a file
-  # charon cannot act on at all, and saying so before anything else stops the
-  # report reading as though that profile were merely healthy-and-absent.
-  # Collected in a subshell then reported OUT here, so EVERY bad name is named:
-  # reporting from inside the loop would need an exit to set the verdict, and
-  # that stops at the first one.
+# An unusable name is not a nuance of the config, it is a file charon cannot
+# act on at all. Collected in a subshell then reported OUT here, so EVERY bad
+# name is named: reporting from inside the loop would need an `exit` to carry
+# the verdict out of the pipeline, and that stops at the first one.
+check_names() {
   _bad=$(profile_names_raw | while IFS= read -r _bn; do
            valid_name "$_bn" || printf 'profile|%s\n' "$_bn"
          done
          source_names_raw | while IFS= read -r _bn; do
            valid_name "$_bn" || printf 'source|%s\n' "$_bn"
          done)
-  if [ -n "$_bad" ]; then
-    printf '%s\n' "$_bad" | while IFS= read -r _e; do
-      [ -n "$_e" ] || continue
-      echo "  [FAIL] ${_e%%|*} '${_e#*|}' is not a usable name. Use only"\
-           "letters, digits, '_' and '-'."
-      echo "         It cannot name a systemd unit, and a name with a space"\
-           "splits into one phantom entry per word. It is being SKIPPED."
-    done
-    _cs=1
-  fi
+  [ -n "$_bad" ] || return 0
+  printf '%s\n' "$_bad" | while IFS= read -r _e; do
+    [ -n "$_e" ] || continue
+    echo "  [FAIL] ${_e%%|*} '${_e#*|}' is not a usable name. Use only"\
+         "letters, digits, '_' and '-'."
+    echo "         It cannot name a systemd unit, and a name with a space"\
+         "splits into one phantom entry per word. It is being SKIPPED."
+  done
+  return 1
+}
+
+check_config_sanity() {
+  _cs=0
+  # NAMES FIRST: saying this before anything else stops the rest of the report
+  # reading as though a skipped profile were merely healthy-and-absent.
+  check_names || _cs=1
   for _s in $(source_names); do
     _m=$(source_get "$_s" MOUNT); _c=$(source_get "$_s" CACHE_ROOT)
     [ -n "$_m" ] && [ -n "$_c" ] || continue
@@ -789,47 +792,52 @@ check_generated() {   # <label> <live-file> <rendered-tmp>
   return 1
 }
 
+# RESOLVE the notify command to an ABSOLUTE path before it is baked. A --user
+# unit runs with a bare system PATH: no ~/bin, no ~/.local/bin. So a BARE
+# COMMAND NAME that resolves fine in the installing shell is unresolvable at
+# run time, and every fault then reaches nobody. Found live on both boxes,
+# which baked CHARON_NOTIFY=intervention-required while that command lives in
+# ~/bin. Resolving HERE is the fix, because this shell has the full PATH.
+# charon still does not care WHAT the command is: the seam stays a plain
+# command contract, this only pins WHERE it is.
+resolved_notify() {
+  case "$CHARON_NOTIFY" in
+    ""|/*) printf '%s' "$CHARON_NOTIFY"; return 0 ;;
+  esac
+  _np=$(command -v "$CHARON_NOTIFY" 2>/dev/null || true)
+  if [ -n "$_np" ]; then
+    log_info "notify seam resolved to $_np"; printf '%s' "$_np"
+  else
+    log_warn "CHARON_NOTIFY='$CHARON_NOTIFY' is not on PATH at install time;"\
+             "baking as-is, but a --user unit will NOT resolve it"
+    printf '%s' "$CHARON_NOTIFY"
+  fi
+}
+
+# The per-profile artifacts: its timer, and the drop-in binding it to its own
+# source's mount. Rewritten every install, so re-pointing a profile at another
+# source moves the ordering with it; the stale directory is cleared FIRST, or a
+# profile that moved to PROVIDER=none would keep waiting on a mount it no
+# longer uses.
+write_profile_artifacts() {   # <profile>
+  render_timer "$1" >"$SYSTEMD_USER_DIR/charon-sync-$1.timer"
+  _dp=$(sync_dropin_file "$1")
+  rm -rf "${_dp%/*}"
+  _dd=$(render_sync_dropin "$1")
+  [ -n "$_dd" ] || return 0
+  mkdir -p "${_dp%/*}"
+  printf '%s\n' "$_dd" >"$_dp"
+}
+
 setup_systemd_units() {
   log_info "setting up systemd user units in $SYSTEMD_USER_DIR"
   mkdir -p "$SYSTEMD_USER_DIR"
-
-  # The service template carries the resolved remote + notify seam, so the timed
-  # --user runs (no shell env) use the same config this install resolved.
-  #
-  # RESOLVE the notify command to an ABSOLUTE path before baking it. A --user
-  # unit runs with a bare system PATH: no ~/bin, no ~/.local/bin. So a BARE
-  # COMMAND NAME that resolves fine in the installing shell is unresolvable at
-  # run time, and every fault then reaches nobody. Found live on both boxes,
-  # which baked CHARON_NOTIFY=intervention-required while that command lives in
-  # ~/bin. Resolving HERE is the fix, because this shell has the full PATH.
-  # charon still does not care WHAT the command is: the seam stays a plain
-  # command contract, this only pins WHERE it is.
-  _notify=$CHARON_NOTIFY
-  case "$_notify" in
-    ""|/*) : ;;
-    *) _np=$(command -v "$_notify" 2>/dev/null || true)
-       if [ -n "$_np" ]; then
-         _notify=$_np; log_info "notify seam resolved to $_notify"
-       else
-         log_warn "CHARON_NOTIFY='$_notify' is not on PATH at install time;"\
-                  "baking as-is, but a --user unit will NOT resolve it"
-       fi ;;
-  esac
-  render_sync_unit "$_notify" >"$SYSTEMD_USER_DIR/charon-sync@.service"
-
+  # The service template carries the resolved remote + notify seam, so the
+  # timed --user runs (no shell env) use the config this install resolved.
+  render_sync_unit "$(resolved_notify)" \
+    >"$SYSTEMD_USER_DIR/charon-sync@.service"
   for p in $(profile_names); do
-    render_timer "$p" >"$SYSTEMD_USER_DIR/charon-sync-$p.timer"
-    # Bind this profile to ITS source's mount unit. Rewritten every install, so
-    # re-pointing a profile at another source moves the ordering with it; the
-    # stale directory is cleared first or a profile that moved to PROVIDER=none
-    # would keep waiting on the mount it no longer uses.
-    _dp=$(sync_dropin_file "$p")
-    rm -rf "${_dp%/*}"
-    _dd=$(render_sync_dropin "$p")
-    if [ -n "$_dd" ]; then
-      mkdir -p "${_dp%/*}"
-      printf '%s\n' "$_dd" >"$_dp"
-    fi
+    write_profile_artifacts "$p"
   done
 
   if ! have_systemd; then
@@ -1171,7 +1179,8 @@ check_service_template() {
 # Three questions per profile, because any one of them alone lies: is the timer
 # ARMED, did the last run actually WORK, and is the live prf the one THIS
 # version would generate.
-check_profile_health() {   # <profile>
+# Is the timer ARMED, and is it the one this version would write.
+check_profile_timer() {   # <profile>
   _r=0
   _t="charon-sync-$1.timer"
   if systemctl --user is-enabled "$_t" >/dev/null 2>&1; then
@@ -1184,11 +1193,15 @@ check_profile_health() {   # <profile>
   render_timer "$1" >"$_tt"
   check_generated "$_t" "$SYSTEMD_USER_DIR/$_t" "$_tt" || _r=1
   rm -f "$_tt"
+  return $_r
+}
 
-  # The ordering drop-in is a generated artifact like any other, so DIFF it.
-  # An absent one is not automatically drift: a PROVIDER=none profile correctly
-  # has none, and reporting that as missing would train the reader to ignore
-  # the line. Assert the state that SHOULD hold, either way.
+# Is this profile ordered after the mount of the source it actually draws on.
+# An ABSENT drop-in is not automatically drift: a PROVIDER=none profile
+# correctly has none, and reporting that as missing would train the reader to
+# ignore the line. Assert the state that SHOULD hold, either way.
+check_profile_ordering() {   # <profile>
+  _r=0
   _dw=$(render_sync_dropin "$1")
   _df=$(sync_dropin_file "$1")
   if [ -z "$_dw" ]; then
@@ -1205,12 +1218,15 @@ check_profile_health() {   # <profile>
     check_generated "charon-sync@$1 ordering drop-in" "$_df" "$_dt" || _r=1
     rm -f "$_dt"
   fi
+  return $_r
+}
 
-  # PRESENCE IS NOT FUNCTION. An enabled, active timer whose service fails
-  # every single pass looks perfectly healthy to a presence check, which is how
-  # manifestor sat at 5-of-6 failed runs behind an all-[OK] audit for hours.
-  # The outcome itself comes from profile_outcome, shared with status, so the
-  # two cannot disagree about what the same run meant.
+# PRESENCE IS NOT FUNCTION. An enabled, active timer whose service fails every
+# single pass looks perfectly healthy to a presence check, which is how
+# manifestor sat at 5-of-6 failed runs behind an all-[OK] audit for hours. The
+# outcome comes from profile_outcome, shared with status, so the two cannot
+# disagree about what the same run meant.
+check_profile_outcome() {   # <profile>
   _u="charon-sync@$1.service"
   _oc=$(profile_outcome "$1")
   case "${_oc%%|*}" in
@@ -1219,15 +1235,18 @@ check_profile_health() {   # <profile>
     skip)  echo "  [WARN] $_u last run: SKIPPED, $(printf '%s' "$_oc" |
                   cut -d'|' -f3)" ;;
     *)     echo "  [FAIL] $_u last run: $(printf '%s' "$_oc" | cut -d'|' -f3)"
-           _r=1 ;;
+           return 1 ;;
   esac
+  return 0
+}
 
-  # Render to a TEMP FILE, not a pipe: the comparison stays byte-exact, and a
-  # render FAILURE becomes distinguishable from a mismatch. Reporting an
-  # unresolvable source as "hand-patched, or a stale install" sends the reader
-  # hunting for an edit that does not exist -- which is exactly what happened
-  # mid-migration, when profiles named a source whose definition was not
-  # published yet.
+# Render to a TEMP FILE, not a pipe: the comparison stays byte-exact, and a
+# render FAILURE becomes distinguishable from a mismatch. Reporting an
+# unresolvable source as "hand-patched, or a stale install" sends the reader
+# hunting for an edit that does not exist -- exactly what happened
+# mid-migration, when profiles named a source not published yet.
+check_profile_prf() {   # <profile>
+  _r=0
   _prf=$UNISON_DIR/charon-$1.prf
   _rt=${TMPDIR:-/tmp}/charon-render.$$.$1
   if [ ! -f "$_prf" ]; then
@@ -1245,6 +1264,20 @@ check_profile_health() {   # <profile>
     _r=1
   fi
   rm -f "$_rt" "$_rt.err"
+  return $_r
+}
+
+# FOUR independent questions, because any one of them alone lies: is the timer
+# armed, is it ordered behind its own source's mount, did the last run actually
+# WORK, and is the live prf the one this version would generate. Each reports
+# its own markers; this only aggregates, and deliberately runs ALL of them
+# rather than short-circuiting, so one failure never hides the next.
+check_profile_health() {   # <profile>
+  _r=0
+  check_profile_timer    "$1" || _r=1
+  check_profile_ordering "$1" || _r=1
+  check_profile_outcome  "$1" || _r=1
+  check_profile_prf      "$1" || _r=1
   return $_r
 }
 
