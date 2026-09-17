@@ -42,6 +42,29 @@ LEGACY_UNIT="charon-mount.service"
 
 mount_unit() { printf 'charon-mount@%s.service' "$1"; }
 
+# The instances that are ENABLED, one source name per line.
+#
+# READ FROM THE ENABLEMENT SYMLINKS, never from `list-unit-files`. A template
+# INSTANCE is not a unit file: `list-unit-files 'charon-mount@*.service'`
+# reports the TEMPLATE, charon-mount@.service, whose instance part is empty.
+# The first version of the orphan check and of uninstall both enumerated that
+# way and so found NOTHING on real systemd -- an orphaned instance went
+# unreported and uninstall left instances enabled against a template it had
+# just deleted. Both passed their test, because the test's systemctl stub
+# answered that query the way I assumed rather than the way systemd does.
+# Our template's only [Install] target is default.target, so this is the
+# complete set.
+enabled_instances() {
+  _w=$_sd/default.target.wants
+  [ -d "$_w" ] || return 0
+  for _l in "$_w"/charon-mount@*.service; do
+    [ -e "$_l" ] || continue
+    _n=$(basename "$_l"); _n=${_n#charon-mount@}; _n=${_n%.service}
+    [ -n "$_n" ] && printf '%s\n' "$_n"
+  done
+  return 0
+}
+
 # The rclone-backed sources, one per line. Only these get a mount unit; a
 # PROVIDER=none source is someone else's tree and charon must not touch it.
 rclone_sources() {
@@ -323,12 +346,10 @@ check_source_instances() {
 # nothing about why. Catch the orphan rather than let it rot.
 check_orphan_instances() {
   _r=0
-  for _u in $(systemctl --user list-unit-files 'charon-mount@*.service' \
-                --no-legend 2>/dev/null | awk '{print $1}'); do
-    _in=${_u#charon-mount@}; _in=${_in%.service}
-    [ -n "$_in" ] || continue
+  for _in in $(enabled_instances); do
     rclone_sources | grep -qx "$_in" && continue
-    echo "  [FAIL] $_u is enabled but '$_in' is not an rclone-backed source"
+    echo "  [FAIL] $(mount_unit "$_in") is enabled but '$_in' is not an"\
+         "rclone-backed source; it can never mount"
     _r=1
   done
   return $_r
@@ -404,9 +425,8 @@ do_uninstall() {
   # EVERY instance, not just this shell's source: uninstall that left another
   # remote's unit enabled would leave a unit pointing at a template it just
   # deleted, which systemd reports as a load failure on every daemon-reload.
-  for _u in $(systemctl --user list-unit-files 'charon-mount@*.service' \
-                --no-legend 2>/dev/null | awk '{print $1}'); do
-    systemctl --user disable --now "$_u" >/dev/null 2>&1 || :
+  for _in in $(enabled_instances); do
+    systemctl --user disable --now "$(mount_unit "$_in")" >/dev/null 2>&1 || :
   done
   sweep_legacy_singleton
   rm -f "$TEMPLATE_FILE"

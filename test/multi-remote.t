@@ -19,43 +19,49 @@ harness_init multi-remote
 export HOME=$T
 CFG=$T/cfg
 SD=$T/xdg/systemd/user
-export SYSTEMD_STUB_STATE=$T/enabled
+W=$SD/default.target.wants
 export SYSTEMD_STUB_SD=$SD
-mkdir -p "$T/bin" "$CFG/profiles.d" "$CFG/sources.d" "$SD" "$T/enabled" \
+mkdir -p "$T/bin" "$CFG/profiles.d" "$CFG/sources.d" "$SD" \
          "$T/st" "$T/one/Docs" "$T/two/Pics" "$T/nas/Files" \
          "$T/c1/Docs" "$T/c2/Pics" "$T/c3/Files"
 
-# A systemd model faithful enough to tell the questions apart: unit FILES come
-# from the unit dir, enablement from markers. A stub that answered "yes" to
-# everything would have passed against the old singleton too.
+# A systemd model faithful to the ONE behaviour this test turns on: `enable`
+# creates a symlink under default.target.wants, and `list-unit-files` reports
+# UNIT FILES ONLY -- so a template INSTANCE never appears there, only the
+# template itself. The first version of this stub listed enabled instances as
+# though they were unit files, which is NOT what systemd does, and it made two
+# real bugs pass: the orphan check and uninstall both enumerated instances that
+# way and found nothing on a real box. A stub that answers a query differently
+# from the real tool makes its test worse than no test.
 cat > "$T/bin/systemctl" <<'STUB'
 #!/bin/sh
-U=$SYSTEMD_STUB_STATE; SD=$SYSTEMD_STUB_SD
-mkdir -p "$U"
+SD=$SYSTEMD_STUB_SD; W=$SD/default.target.wants
+mkdir -p "$W"
 a=
 for x in "$@"; do
-  case "$x" in --user|--now|--no-legend|-q|--quiet) ;; *) a="$a $x" ;; esac
+  case "$x" in
+    --user|--now|--no-legend|-q|--quiet|--all) ;;
+    *) a="$a $x" ;;
+  esac
 done
 # shellcheck disable=SC2086
 set -- $a
 case "${1:-}" in
-  enable)  shift; for u in "$@"; do : > "$U/$u"; done ;;
-  disable) shift; for u in "$@"; do rm -f "$U/$u"; done ;;
-  is-enabled|is-active) [ -f "$U/$2" ] ;;
+  enable)  shift; for u in "$@"; do ln -sfn "$SD/${u%%@*}@.service" "$W/$u"
+           done ;;
+  disable) shift; for u in "$@"; do rm -f "$W/$u"; done ;;
+  is-enabled|is-active) [ -e "$W/$2" ] || [ -e "$SD/$2" ] ;;
   list-unit-files)
     pat=${2:-}
-    { for f in "$SD"/*.service "$SD"/*.timer; do
-        [ -e "$f" ] && basename "$f"
-      done
-      for f in "$U"/*; do [ -e "$f" ] && basename "$f"; done
-    } 2>/dev/null | sort -u | while read -r n; do
-      [ -n "$n" ] || continue
+    for f in "$SD"/*.service "$SD"/*.timer; do
+      [ -e "$f" ] || continue
+      n=$(basename "$f")
       case "$pat" in
         "") echo "$n enabled" ;;
         # shellcheck disable=SC2254
         *) case "$n" in $pat) echo "$n enabled" ;; esac ;;
       esac
-    done ;;
+    done 2>/dev/null ;;
   *) : ;;
 esac
 exit 0
@@ -123,18 +129,18 @@ _c() {
 
 # --- a legacy singleton is present, as on any box upgrading across this ---
 printf '[Unit]\nDescription=old\n' > "$SD/charon-mount.service"
-: > "$T/enabled/charon-mount.service"
+mkdir -p "$W"; ln -sfn "$SD/charon-mount.service" "$W/charon-mount.service"
 
 _c install >/dev/null 2>&1 || fail "install failed with two rclone sources"
 
 # --- BOTH sources get an instance, enabled and active ---
 for s in one two; do
-  [ -f "$T/enabled/charon-mount@$s.service" ] \
+  [ -e "$W/charon-mount@$s.service" ] \
     || fail "source '$s' got no mount instance; only one remote is mounted"
 done
 
 # --- the retired singleton is swept, not left fighting for the mountpoint ---
-[ -f "$T/enabled/charon-mount.service" ] \
+[ -e "$W/charon-mount.service" ] \
   && fail "the legacy singleton is still enabled after install" || :
 [ -f "$SD/charon-mount.service" ] \
   && fail "the legacy singleton unit file survived install" || :
@@ -208,7 +214,7 @@ grep -q 'charon-mount@one' "$(_dp docs)" \
 # --- uninstall removes EVERY instance, not just one ---
 _c uninstall >/dev/null 2>&1 || fail "uninstall failed"
 for s in one two; do
-  [ -f "$T/enabled/charon-mount@$s.service" ] \
+  [ -e "$W/charon-mount@$s.service" ] \
     && fail "uninstall left source '$s' enabled" || :
 done
 [ -e "$(_dp docs)" ] && fail "uninstall left an ordering drop-in behind" || :
