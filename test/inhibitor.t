@@ -72,7 +72,7 @@ chmod +x "$T/bin/timeout"
 _reset() { : > "$T/inhibit.log"; : > "$T/unison.log"; }
 _ran()   { grep -qx RAN "$T/unison.log"; }
 
-# --- DENIED + unison succeeds: the pass must SUCCEED, not inherit polkit's 1 ---
+# --- DENIED + unison succeeds: the pass SUCCEEDS, not polkit's 1 ---
 # The regression that mattered. A denial exiting 1 made the whole pass look
 # like a unison failure, so it raised a fault and a notify flag for a condition
 # that is not an error at all.
