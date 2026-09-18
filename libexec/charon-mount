@@ -133,6 +133,74 @@ remote_type() {
 # Google's 2025-03-31 Photos-scope retirement and cannot complete that flow).
 RCLONE_DEB_URL=https://downloads.rclone.org/rclone-current-linux-amd64.deb
 
+# Copy one remote's stanza from a peer that already has it, into $RCLONE_CONF.
+#
+# THIS USED TO APPEND STRAIGHT FROM THE PIPE: `ssh peer "rclone config show X"
+# >>"$RCLONE_CONF"`. The redirect happens BEFORE ssh's status is known, so a
+# connection that dropped mid-transfer left a TRUNCATED stanza permanently in
+# the file -- measured, ending mid-JSON inside an OAuth token:
+#
+#     [gdrive]
+#     type = drive
+#     token = {"access_to
+#
+# and rclone then reported `gdrive:` as EXISTING, so charon's own
+# already-configured check skipped the pull on the next run while the remote was
+# unusable. A corrupt rclone.conf also breaks every OTHER rclone user on the
+# box, and this file holds credentials, so a half-write is the worst outcome
+# available. Stage, VALIDATE, then append; on any failure the file is untouched.
+pull_remote_from_peer() {   # <peer>
+  log_info "pulling '${REMOTE_NAME}:' from $1"
+  mkdir -p "$(dirname "$RCLONE_CONF")"
+  # Refuse to add a SECOND stanza for a remote already named in the file. rclone
+  # reads the first and silently ignores the rest, so a duplicate is an
+  # invisible split brain: charon would look configured while using values
+  # nobody can see.
+  if [ -f "$RCLONE_CONF" ] \
+     && grep -q "^\[${REMOTE_NAME}\]\$" "$RCLONE_CONF"; then
+    log_error "'$RCLONE_CONF' already has a [${REMOTE_NAME}] stanza."
+    log_error "refusing to append a second one; fix or remove it first."
+    return 1
+  fi
+  _pp=$1
+  _pt=$(mktemp) || return 1
+  # BatchMode when there is no terminal: without it ssh can sit on a password
+  # prompt forever, and this runs from installs that have no tty at all.
+  _bm=
+  [ -t 0 ] || _bm="-o BatchMode=yes"
+  # shellcheck disable=SC2086  # _bm is a deliberate word-split of one flag pair
+  if ! ssh $_bm "$_pp" "rclone config show ${REMOTE_NAME}" >"$_pt" 2>/dev/null
+  then
+    log_error "could not reach '$_pp' to pull '${REMOTE_NAME}:'"
+    log_error "$RCLONE_CONF is UNCHANGED."
+    rm -f "$_pt"; return 1
+  fi
+  # VALIDATE before trusting it. A peer that does not have the remote answers
+  # successfully with nothing at all, and an ssh banner or error on stdout is
+  # not a config stanza. Require the section header we asked for, and at least
+  # one key under it.
+  if ! grep -q "^\[${REMOTE_NAME}\]\$" "$_pt" \
+     || ! grep -q '^[a-z_]* *=' "$_pt"; then
+    log_error "'$_pp' did not return a usable [${REMOTE_NAME}] stanza"
+    log_error "(does that host have the remote configured?)"
+    log_error "$RCLONE_CONF is UNCHANGED."
+    rm -f "$_pt"; return 1
+  fi
+  # Append only now. A leading newline keeps the stanza from fusing onto a
+  # previous line that lacked a trailing one -- which is exactly the state the
+  # old truncating path used to leave behind.
+  { printf '\n'; cat "$_pt"; } >>"$RCLONE_CONF" || {
+    log_error "could not write $RCLONE_CONF"; rm -f "$_pt"; return 1; }
+  rm -f "$_pt"
+  if "$RCLONE_BIN" listremotes 2>/dev/null | grep -qx "${REMOTE_NAME}:"; then
+    log_info "remote '${REMOTE_NAME}:' provisioned from $_pp"
+    return 0
+  fi
+  log_error "appended a [${REMOTE_NAME}] stanza from '$_pp' but rclone still"
+  log_error "does not list it; inspect $RCLONE_CONF"
+  return 1
+}
+
 ensure_rclone() {
   command -v "$RCLONE_BIN" >/dev/null 2>&1 || {
     log_info "installing rclone from upstream"
@@ -162,15 +230,7 @@ ensure_rclone() {
   fi
 
   if [ -n "$peer" ]; then
-    log_info "pulling '${REMOTE_NAME}:' from $peer"
-    mkdir -p "$(dirname "$RCLONE_CONF")"
-    if ssh "$peer" "rclone config show ${REMOTE_NAME}" >>"$RCLONE_CONF" \
-       && "$RCLONE_BIN" listremotes 2>/dev/null | grep -qx "${REMOTE_NAME}:"
-    then
-      log_info "remote '${REMOTE_NAME}:' provisioned from $peer"
-      return 0
-    fi
-    log_error "could not provision '${REMOTE_NAME}:' from $peer"
+    pull_remote_from_peer "$peer" && return 0
   fi
 
   # first machine, or peer pull failed: one-time interactive auth

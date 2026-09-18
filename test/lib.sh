@@ -40,17 +40,14 @@ path_without() {   # <tool>... -> a PATH dir missing ALL of them
   # dirname, which bin/charon needs to self-locate, so the case died on a
   # missing dirname instead of exercising the absent-tool path. Anything that
   # runs a real charon command needs far more than a curated list.
+  # ONE `ln` per source dir, then remove the excluded names. Linking each entry
+  # individually meant ~3000 execs per call and cost ~5s a test; three tests use
+  # this, so it was a third of the suite's wall time.
   for _pw_d in /usr/bin /bin /usr/sbin /sbin; do
     [ -d "$_pw_d" ] || continue
-    for _pw_f in "$_pw_d"/*; do
-      [ -e "$_pw_f" ] || continue
-      _pw_b=${_pw_f##*/}
-      _pw_skip=
-      for _pw_t in "$@"; do [ "$_pw_b" = "$_pw_t" ] && _pw_skip=y; done
-      [ -n "$_pw_skip" ] && continue
-      [ -e "$_pw_dir/$_pw_b" ] || ln -sfn "$_pw_f" "$_pw_dir/$_pw_b"
-    done
+    ln -sfn "$_pw_d"/* "$_pw_dir/" 2>/dev/null || :
   done
+  for _pw_t in "$@"; do rm -f "$_pw_dir/$_pw_t"; done
   # Assert honesty on the FILESYSTEM, not via `command -v` in a subshell: an
   # assertion about PATH resolution is subject to the same export and
   # command-hashing subtleties it is trying to test, and the first version of
