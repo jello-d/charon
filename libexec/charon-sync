@@ -395,6 +395,49 @@ check_names() {
   return 1
 }
 
+# Create the CACHE_ROOT of every source a profile uses. charon OWNS the cache,
+# so creating it is its job, and doing it here removes an ambiguity that made a
+# real gap uncloseable: install left it absent, so check could not treat
+# a missing cache root as drift without failing every fresh install. Now
+# post-install it always exists, and its later absence is unambiguously wrong.
+#
+# Deliberately NOT the MOUNT: for PROVIDER=none that is someone else's tree, and
+# silently creating an empty directory where a missing mount belongs is how a
+# dead mount gets mistaken for a live one.
+ensure_cache_roots() {
+  for _p in $(profile_names); do
+    _ecs=$(profile_source_name "$_p"); [ -n "$_ecs" ] || continue
+    _ecc=$(source_get "$_ecs" CACHE_ROOT); [ -n "$_ecc" ] || continue
+    [ -d "$_ecc" ] && continue
+    log_info "creating cache root for source '$_ecs': $_ecc"
+    mkdir -p "$_ecc" || log_warn "could not create cache root $_ecc"
+  done
+  return 0
+}
+
+# Do the two trees a source names actually EXIST. Nothing asserted this, and a
+# missing cache root changes no generated artifact, so every diff-based check
+# stayed green while the cache was simply gone -- fully installed, fully broken.
+# (A wrong MOUNT was caught only incidentally, because it changes the rendered
+# prf; deleting the cache changes nothing that gets rendered.)
+#
+# Existence only: a probe WRITES, and check must never write.
+check_source_roots() {
+  _csr=0
+  for _s in $(source_names); do
+    for _k in MOUNT CACHE_ROOT; do
+      _v=$(source_get "$_s" "$_k"); [ -n "$_v" ] || continue
+      if [ -d "$_v" ]; then
+        echo "  [OK]   source '$_s' $_k present ($_v)"
+      else
+        echo "  [FAIL] source '$_s' $_k does not exist: $_v"
+        _csr=1
+      fi
+    done
+  done
+  return $_csr
+}
+
 check_config_sanity() {
   _cs=0
   # NAMES FIRST: saying this before anything else stops the rest of the report
@@ -1155,6 +1198,7 @@ do_install() {
     exit 2
   fi
   ensure_source_traits
+  ensure_cache_roots
   setup_unison_profiles
   setup_systemd_units
 
@@ -1205,19 +1249,19 @@ check_service_template() {
 # version would generate.
 # Is the timer ARMED, and is it the one this version would write.
 check_profile_timer() {   # <profile>
-  _r=0
+  _ptr=0
   _t="charon-sync-$1.timer"
   if systemctl --user is-enabled "$_t" >/dev/null 2>&1; then
     echo "  [OK]   $_t enabled"
-  else echo "  [FAIL] $_t not enabled"; _r=1; fi
+  else echo "  [FAIL] $_t not enabled"; _ptr=1; fi
   if systemctl --user is-active "$_t" >/dev/null 2>&1; then
     echo "  [OK]   $_t active"
   else echo "  [WARN] $_t not active"; fi
   _tt=${TMPDIR:-/tmp}/charon-timer-render.$$.$1
   render_timer "$1" >"$_tt"
-  check_generated "$_t" "$SYSTEMD_USER_DIR/$_t" "$_tt" || _r=1
+  check_generated "$_t" "$SYSTEMD_USER_DIR/$_t" "$_tt" || _ptr=1
   rm -f "$_tt"
-  return $_r
+  return $_ptr
 }
 
 # Is this profile ordered after the mount of the source it actually draws on.
@@ -1225,24 +1269,24 @@ check_profile_timer() {   # <profile>
 # correctly has none, and reporting that as missing would train the reader to
 # ignore the line. Assert the state that SHOULD hold, either way.
 check_profile_ordering() {   # <profile>
-  _r=0
+  _por=0
   _dw=$(render_sync_dropin "$1")
   _df=$(sync_dropin_file "$1")
   if [ -z "$_dw" ]; then
     if [ -f "$_df" ]; then
       echo "  [FAIL] $1 has an ordering drop-in but draws on no charon-mounted"\
            "source; run '${APP_NAME} install'"
-      _r=1
+      _por=1
     else
       echo "  [OK]   $1 needs no mount ordering (source is not charon-mounted)"
     fi
   else
     _dt=${TMPDIR:-/tmp}/charon-dropin-render.$$.$1
     printf '%s\n' "$_dw" >"$_dt"
-    check_generated "charon-sync@$1 ordering drop-in" "$_df" "$_dt" || _r=1
+    check_generated "charon-sync@$1 ordering drop-in" "$_df" "$_dt" || _por=1
     rm -f "$_dt"
   fi
-  return $_r
+  return $_por
 }
 
 # PRESENCE IS NOT FUNCTION. An enabled, active timer whose service fails every
@@ -1270,25 +1314,25 @@ check_profile_outcome() {   # <profile>
 # hunting for an edit that does not exist -- exactly what happened
 # mid-migration, when profiles named a source not published yet.
 check_profile_prf() {   # <profile>
-  _r=0
+  _ppr=0
   _prf=$UNISON_DIR/charon-$1.prf
   _rt=${TMPDIR:-/tmp}/charon-render.$$.$1
   if [ ! -f "$_prf" ]; then
-    echo "  [FAIL] $_prf missing (run '${APP_NAME} install')"; _r=1
+    echo "  [FAIL] $_prf missing (run '${APP_NAME} install')"; _ppr=1
   elif ! render_prf "$1" >"$_rt" 2>"$_rt.err"; then
     echo "  [FAIL] charon-$1.prf cannot be RE-RENDERED, so it cannot be"\
          "checked. The profile or its source is unresolvable:"
     sed 's/^/           /' "$_rt.err" | head -3
-    _r=1
+    _ppr=1
   elif diff -q "$_rt" "$_prf" >/dev/null 2>&1; then
     echo "  [OK]   charon-$1.prf matches this version's template"
   else
     echo "  [FAIL] charon-$1.prf DIFFERS from this version's template"\
          "(hand-patched, or a stale install); run '${APP_NAME} install'"
-    _r=1
+    _ppr=1
   fi
   rm -f "$_rt" "$_rt.err"
-  return $_r
+  return $_ppr
 }
 
 # FOUR independent questions, because any one of them alone lies: is the timer
@@ -1297,12 +1341,12 @@ check_profile_prf() {   # <profile>
 # its own markers; this only aggregates, and deliberately runs ALL of them
 # rather than short-circuiting, so one failure never hides the next.
 check_profile_health() {   # <profile>
-  _r=0
-  check_profile_timer    "$1" || _r=1
-  check_profile_ordering "$1" || _r=1
-  check_profile_outcome  "$1" || _r=1
-  check_profile_prf      "$1" || _r=1
-  return $_r
+  _phr=0
+  check_profile_timer    "$1" || _phr=1
+  check_profile_ordering "$1" || _phr=1
+  check_profile_outcome  "$1" || _phr=1
+  check_profile_prf      "$1" || _phr=1
+  return $_phr
 }
 
 # Audit the notify seam AS BAKED INTO THE UNIT, probed with the UNIT's PATH and
@@ -1360,6 +1404,7 @@ do_check() {
   # or a duplicated target is wrong whether or not there is a scheduler, and it
   # is the kind of wrong that destroys data rather than merely not running.
   check_config_sanity || _rc=1
+  check_source_roots || _rc=1
   if ! have_systemd; then
     echo "  [FAIL] systemctl not found: charon schedules through systemd"\
          "--user, so nothing here is running automatically."

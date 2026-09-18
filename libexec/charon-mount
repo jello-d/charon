@@ -322,7 +322,7 @@ check_legacy_singleton() {
 # only ever be asked about one unit, so the interesting question -- is each
 # configured remote actually mounted -- could not even be posed.
 check_source_instances() {
-  _r=0; _any=
+  _sir=0; _any=
   for _s in $(rclone_sources); do
     _any=y
     _u=$(mount_unit "$_s")
@@ -330,34 +330,34 @@ check_source_instances() {
       echo "  [OK]   $_u enabled"
     else
       echo "  [FAIL] $_u not enabled (source '$_s' will not mount at boot)"
-      _r=1
+      _sir=1
     fi
     if systemctl --user is-active "$_u" >/dev/null 2>&1; then
       echo "  [OK]   $_u active"
     else
-      echo "  [FAIL] $_u not active (source '$_s' is NOT mounted)"; _r=1
+      echo "  [FAIL] $_u not active (source '$_s' is NOT mounted)"; _sir=1
     fi
   done
   [ -n "$_any" ] || echo "  [OK]   no rclone-backed source; nothing to mount"
-  return $_r
+  return $_sir
 }
 
 # An instance enabled for a source that no longer exists never starts, and says
 # nothing about why. Catch the orphan rather than let it rot.
 check_orphan_instances() {
-  _r=0
+  _oir=0
   for _in in $(enabled_instances); do
     rclone_sources | grep -qx "$_in" && continue
     echo "  [FAIL] $(mount_unit "$_in") is enabled but '$_in' is not an"\
          "rclone-backed source; it can never mount"
-    _r=1
+    _oir=1
   done
-  return $_r
+  return $_oir
 }
 
 do_check() {
   echo "== charon-mount unit check =="
-  _r=0
+  _dcr=0
   # NO rclone-backed source means charon mounts nothing, and install
   # DELIBERATELY writes no template in that case. Demanding one here made a
   # BYO-only install (every source PROVIDER=none) fail check FOREVER: install
@@ -369,20 +369,20 @@ do_check() {
   # come from a source that has since gone away, so those two checks still run.
   if [ -z "$(rclone_sources)" ]; then
     echo "  [OK]   no rclone-backed source; charon mounts nothing here"
-    check_legacy_singleton || _r=1
-    check_orphan_instances || _r=1
-    return $_r
+    check_legacy_singleton || _dcr=1
+    check_orphan_instances || _dcr=1
+    return $_dcr
   fi
   if [ ! -f "$TEMPLATE_FILE" ]; then
     echo "  [FAIL] $SYSTEMD_TEMPLATE missing (run '${APP_NAME} install')"
     return 1
   fi
   # All four run; none short-circuits, so one failure never hides the next.
-  check_mount_template   || _r=1
-  check_legacy_singleton || _r=1
-  check_source_instances || _r=1
-  check_orphan_instances || _r=1
-  return $_r
+  check_mount_template   || _dcr=1
+  check_legacy_singleton || _dcr=1
+  check_source_instances || _dcr=1
+  check_orphan_instances || _dcr=1
+  return $_dcr
 }
 
 do_install() {
