@@ -537,17 +537,36 @@ check_install_prereqs() {
   # any non-TTY context (an agent shell, a non-interactive ssh) on a box that
   # needed no privilege at all, which turned every routine prf regeneration
   # into a sudo handoff for no reason. Gate the sudo on the actual need.
-  if dpkg -l 2>/dev/null | grep -q '^ii  unison '; then
+  # RUNNABLE, not packaged: see unison_present. Asking dpkg here is what made a
+  # source-built or nix unison demand sudo for nothing.
+  if unison_present; then
     log_trace "'unison' present; install needs no privilege"
     return 0
   fi
   sudo true || { log_error "failed to acquire sudo privileges"; exit 3; }
 }
 
+# unison_present: is the reconciler RUNNABLE. That is the only thing charon
+# needs, and it is NOT the same question as "is unison a dpkg package", which is
+# what both of these used to ask. A unison built from source, or installed by
+# nix or brew, or living in /usr/local/bin, is invisible to `dpkg -l` -- so
+# charon called it absent, demanded sudo it did not need, and died in any
+# non-TTY context. That is precisely the false prerequisite the sudo gate was
+# added to remove; it was removed for the apt case and left in place for
+# everyone else.
+unison_present() { command -v unison >/dev/null 2>&1; }
+
 install_packages() {
   log_info "ensuring 'unison' is installed"
-  if dpkg -l | grep -q '^ii  unison '; then
+  if unison_present; then
     log_trace "'unison' already installed; skipping"; return 0
+  fi
+  # Genuinely absent. apt is the only installer charon knows, so say so plainly
+  # rather than running a `sudo apt-get` that does not exist on this box.
+  if ! command -v apt-get >/dev/null 2>&1; then
+    log_error "unison is not installed and apt-get is not available here."
+    log_error "install unison by whatever means this system uses, then re-run."
+    exit 1
   fi
   sudo apt-get install -y unison
 }
