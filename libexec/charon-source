@@ -362,7 +362,17 @@ _need() {
 # test sources the file and calls a function directly with controlled input.
 # Executing the script is unaffected: the variable is only ever set by a test.
 # shellcheck disable=SC2317  # the dispatch below IS reached when executed
-if [ -n "${CHARON_LIB_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
+# UNSET IT BEFORE RETURNING. The flag has to be visible to the shell that is
+# sourcing this file, but if it survives into the ENVIRONMENT every sibling impl
+# a function shells out to (charon-source health / status / seed / probe) hits
+# this same guard and exits 0 having done NOTHING -- a silent no-op that reads
+# as success. Measured: seed_profile "succeeded" without running rclone at all,
+# and a gate "passed" because charon-source status no-op'd. Unsetting here makes
+# the seam safe no matter how a test sets the variable.
+if [ -n "${CHARON_LIB_ONLY:-}" ]; then
+  unset CHARON_LIB_ONLY
+  return 0 2>/dev/null || exit 0
+fi
 
 case "${1:-}" in
   list)     source_names ;;
