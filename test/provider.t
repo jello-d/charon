@@ -20,11 +20,29 @@ echo content > "$T/nas/Docs/a.txt"
 
 # NO rclone on PATH AT ALL. If anything in the sync half still reaches for it,
 # this test fails, which is the point.
-for s in systemctl unison mountpoint systemd-run; do
+for s in unison mountpoint systemd-run; do
   printf '#!/bin/sh\nexit 0\n' > "$T/bin/$s"; chmod +x "$T/bin/$s"
 done
 printf '#!/bin/sh\necho "ii  unison  2.53"\n' > "$T/bin/dpkg"
 chmod +x "$T/bin/dpkg"
+# systemctl must answer `list-unit-files` from the unit DIR, not exit 0 and
+# print nothing: check asks whether the sync template is REGISTERED, and a
+# silent stub makes that FAIL for a reason that has nothing to do with charon.
+# That noise is why nothing here ever asserted check's exit status, which in
+# turn hid a real defect (a BYO-only install could never pass).
+cat > "$T/bin/systemctl" <<'STUB'
+#!/bin/sh
+SD=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+case " $* " in
+  *" list-unit-files "*)
+    for f in "$SD"/*.service "$SD"/*.timer; do
+      [ -e "$f" ] || continue
+      printf '%s enabled\n' "${f##*/}"
+    done 2>/dev/null ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/systemctl"
 
 cat > "$CFG/sources.d/nas.conf" <<EOF
 PROVIDER=none
@@ -104,6 +122,21 @@ rm -f "$CFG/profiles.d/dup.conf"
 _c check 2>&1 | grep -qi 'config is coherent' \
   || fail "a clean config was not reported as coherent"
 
+# --- THE VERDICT ITSELF: a BYO-only install must be able to PASS check ---
+# Nothing here asserted this, and that is exactly what hid a real defect: every
+# other `_c check` in this file greps the OUTPUT or swallows the status with
+# `|| :`, so charon could fail forever and this test would not care. It did:
+# install deliberately writes no mount template when no source is rclone-backed,
+# while check demanded one anyway, so a PROVIDER=none-only box exited 0 from
+# install and 1 from check with nothing a user could do. An integrator
+# delegating its verdict to `charon check` -- the contract -- would show
+# permanent drift on a feature charon advertises.
+out=$(_c check 2>&1); rc=$?
+[ "$rc" = 0 ] || fail "a healthy BYO-only install cannot PASS check (rc=$rc):
+$out"
+printf '%s\n' "$out" | grep -qi 'mounts nothing here' \
+  || fail "check did not say plainly that there is nothing to mount ($out)"
+
 # --- a SECOND rclone source is a supported configuration, not a fault ---
 # This block used to assert the opposite: charon had one mount unit with a
 # source baked in, so a second rclone-backed source could never be mounted and
@@ -134,17 +167,11 @@ _c check >/dev/null 2>&1 || :   # back to one source
 # `command -v` finds it and the no-systemd path never runs. Build a PATH that
 # genuinely lacks it, by mirroring the system bins minus the two.
 rm -f "$T/bin/systemctl" "$T/bin/systemd-run"   # the stubs, first on PATH
-mkdir -p "$T/nosd"
-for _f in /usr/bin/* /bin/*; do
-  _b=${_f##*/}
-  case "$_b" in systemctl|systemd-run) continue ;; esac
-  ln -sf "$_f" "$T/nosd/$_b" 2>/dev/null || :
-done
-command -v systemctl >/dev/null 2>&1 \
-  || fail "harness broken: no systemctl on the normal PATH at all"
-( PATH="$T/nosd"; command -v systemctl >/dev/null 2>&1 ) \
-  && fail "harness broken: systemctl still reachable without /usr/bin"
-_nosd() { PATH="$T/bin:$T/nosd" sh "$HERE/bin/charon" "$@"; }
+# path_without does the mirroring AND asserts its own honesty; this block was
+# hand-rolled here first, and inhibitor.t then rebuilt it badly because it was
+# not shared.
+_nd=$(path_without systemctl systemd-run) || exit 1
+_nosd() { PATH="$T/bin:$_nd" sh "$HERE/bin/charon" "$@"; }
 out=$(_nosd install 2>&1) || :
 printf '%s\n' "$out" | grep -qi 'NOTHING IS SCHEDULED' \
   || fail "install said nothing about systemd being absent ($out)"
