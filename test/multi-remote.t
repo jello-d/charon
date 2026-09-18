@@ -46,11 +46,15 @@ for x in "$@"; do
 done
 # shellcheck disable=SC2086
 set -- $a
+rc=0
 case "${1:-}" in
   enable)  shift; for u in "$@"; do ln -sfn "$SD/${u%%@*}@.service" "$W/$u"
            done ;;
   disable) shift; for u in "$@"; do rm -f "$W/$u"; done ;;
-  is-enabled|is-active) [ -e "$W/$2" ] || [ -e "$SD/$2" ] ;;
+  # `|| rc=1`: this stub used to end in an unconditional `exit 0`, which
+  # DISCARDED the result, so is-enabled answered "yes" for anything and any
+  # assertion about enablement was unfalsifiable. Found in scenario.t first.
+  is-enabled|is-active) { [ -e "$W/$2" ] || [ -e "$SD/$2" ]; } || rc=1 ;;
   list-unit-files)
     pat=${2:-}
     for f in "$SD"/*.service "$SD"/*.timer; do
@@ -64,7 +68,7 @@ case "${1:-}" in
     done 2>/dev/null ;;
   *) : ;;
 esac
-exit 0
+exit $rc
 STUB
 chmod +x "$T/bin/systemctl"
 
