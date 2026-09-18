@@ -126,26 +126,36 @@ grep -qi 'probe' "$T/inhibit.log" \
 # to the stub dir, and ASSERT THE HARNESS IS HONEST before asserting anything
 # about charon.
 _reset; rm -f "$T/bin/systemd-inhibit"; _unison 0
-# MIRROR the system bins MINUS systemd-inhibit. Emptying PATH instead would
-# "pass" for the wrong reason: the case would die on a missing grep before it
-# ever reached charon.
-mkdir -p "$T/sysbin"
-for _t in grep cat sed head printf ls rm env sh; do
-  _p=$(command -v "$_t" 2>/dev/null) && ln -sfn "$_p" "$T/sysbin/$_t"
-done
-( PATH="$T/bin:$T/sysbin"; export PATH
-  command -v systemd-inhibit >/dev/null 2>&1 \
-    && { echo "HARNESS-DISHONEST"; exit 9; }
+# ABSENT AND DENIED ARE THE SAME BRANCH in charon, deliberately: the probe is
+# just "did that command succeed", so exit 1 (polkit) and exit 127 (not found)
+# are indistinguishable and both degrade. So this case asserts NOTHING that the
+# denied case above did not already prove, and mutation testing confirms it --
+# leaking the real tool back in still passes, because a denial looks the same.
+#
+# It is here to pin that equivalence, and the assertion that carries weight is
+# the DIRECT one below: that the mirrored PATH really lacks the tool. Without
+# that, this test would silently be a second denied case wearing the wrong name,
+# which is what it WAS on first writing.
+_nosd=$(path_without systemd-inhibit) || exit 1
+# Assert on the FILESYSTEM, not `command -v` inside a subshell: an assertion
+# about PATH resolution is itself subject to PATH export and command-hashing
+# subtleties, and the first version of this line silently never fired because
+# of them. "Is there a systemd-inhibit in that directory" has no such ambiguity.
+# -L, NOT -e: `-e` FOLLOWS the symlink and is FALSE for a dangling one, so an
+# -e test here silently never fired while the entry was plainly present in the
+# directory. For "is there a PATH entry by this name", -L is the question.
+[ -L "$_nosd/systemd-inhibit" ] || [ -e "$_nosd/systemd-inhibit" ] \
+  && fail "the mirrored PATH dir CONTAINS systemd-inhibit, so the 'absent'
+    case below is really testing a DENIAL by the real tool"
+[ -L "$T/bin/systemd-inhibit" ] || [ -e "$T/bin/systemd-inhibit" ] \
+  && fail "the stub systemd-inhibit was not removed before the absent case"
+( PATH="$T/bin:$_nosd"; export PATH
   out=$(run_unison_guarded testprof 2>&1); rc=$?
   _ran || { echo "an ABSENT inhibitor stopped unison from running"; exit 1; }
   [ "$rc" = 0 ] || { echo "absent inhibitor + good unison exited $rc"; exit 1; }
   printf '%s\n' "$out" | grep -qi 'unprotected' \
     || { echo "an absent inhibitor degraded silently"; exit 1; }
-) >"$T/absent.out" 2>&1 || {
-  grep -q HARNESS-DISHONEST "$T/absent.out" \
-    && fail "the harness never removed systemd-inhibit from PATH, so this case
-      was testing the REAL one (which a seated session grants)"
-  fail "absent-inhibitor case: $(cat "$T/absent.out")"
-}
+) >"$T/absent.out" 2>&1 \
+  || fail "absent-inhibitor case: $(cat "$T/absent.out")"
 
 pass "a denied or absent inhibitor degrades the pass and keeps unison's status"

@@ -33,4 +33,16 @@ $_sc"
   _n=$((_n + 1))
 fi
 
-pass "$_n scripts parse"
+# 80 COLUMNS, the project's HARD rule, enforced by the SUITE rather than by a
+# human remembering to run awk. It was not enforced anywhere until 2026-09-17,
+# and a test file went in at 81 columns that same day. Covers the TESTS and the
+# shipped example configs too: they are as much a delivered artifact as the
+# code, and nothing was checking them.
+_long=$(awk 'length>80 {printf "%s:%d (%d cols)\n", FILENAME, FNR, length}' \
+  "$HERE"/bin/* "$HERE"/libexec/* "$HERE/setup.sh" "$HERE"/test/*.t \
+  "$HERE/test/lib.sh" "$HERE/test/run" "$HERE"/share/charon/*.conf 2>/dev/null)
+[ -z "$_long" ] || fail "lines over 80 columns (hard rule):
+$_long"
+_n=$((_n + 1))
+
+pass "$_n scripts parse, lint clean, 80 columns"
