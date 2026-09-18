@@ -1185,7 +1185,6 @@ do_status() {
 }
 
 # `config` was the old name; it only ever printed where things live.
-do_config() { do_status; }
 
 do_install() {
   log_info "install: commencing"
