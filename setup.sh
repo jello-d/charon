@@ -107,7 +107,18 @@ do_check() {
     if [ ! -e "$_want" ]; then
       bad "$_n not installed ($_want)"
     elif [ -z "$_got" ]; then
-      bad "$_n installed at $_want but NOT on PATH"
+      # WARN, not bad: whether $_bin is on the CALLER'S PATH is the caller's
+      # business, not this package's. We installed it where we said we would,
+      # which is the part we control and the part already asserted above.
+      #
+      # Reporting it as a failure is wrong in both directions. A standalone
+      # user with a short PATH gets told, which is useful, but their install is
+      # not broken. And an INTEGRATOR running this check from a non-login
+      # context (an ssh command, a cron, an agent) has no ~/.local/bin on PATH
+      # by construction, so a hard failure there is a false finding it cannot
+      # clear -- observed 2026-09-24, where a remote `tackup check` reported
+      # this against a box whose own provision had just verified clean.
+      warn "$_n installed at $_want but not on THIS shell's PATH"
     elif [ "$(readlink -f "$_got" 2>/dev/null)" \
          != "$(readlink -f "$_want" 2>/dev/null)" ]; then
       bad "$_n on PATH is $_got, NOT the installed $_want (shadowed)"
