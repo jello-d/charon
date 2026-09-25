@@ -87,10 +87,19 @@ _strand || fail "could not strand a temp mid-transfer: unison finished the
   that temps are staged in the destination directory"
 
 # 1b. UNISON CONSUMES ITS OWN TEMP when it next propagates that path.
-_uni >/dev/null 2>&1 || fail "the follow-up unison run failed"
+#
+# DELIBERATELY NOT ASSERTED: unison's exit status. The claim under test is about
+# the temp, and the two are independent -- measured on manifold, where resuming
+# an interrupted transfer delivered the file AND consumed the crumb while
+# exiting 2 with "Destination updated during synchronization" (its post-rename
+# verification tripped over the state the killed run left). The first version of
+# this test asserted `_uni || fail` and so failed on one box and passed on the
+# other while the behaviour it names was identical on both. Assert the
+# filesystem, never a process-wide exit code a dozen things can set.
+_uni >/dev/null 2>&1 || :
 [ -z "$(_crumbs_in "$R")" ] \
-  || fail "unison did NOT clean up its own temp after a successful
-  propagation: $(_crumbs_in "$R")"
+  || fail "unison did NOT clean up its own temp after propagating the path:
+  $(_crumbs_in "$R")"
 [ -f "$R/big.bin" ] || fail "the follow-up run did not deliver the real file"
 
 # 1c. ...AND IT STILL DOES SO WITH THE TIER 0 IGNORE SET. The ignore was a
@@ -98,8 +107,11 @@ _uni >/dev/null 2>&1 || fail "the follow-up unison run failed"
 # this ever fails, the ignore really is blocking cleanup and the comment in
 # prf:charon is wrong.
 _strand || fail "could not strand a temp for the ignore case"
-_uni -ignore "Name $(printf '.unison.*.unison.tmp')" >/dev/null 2>&1 \
-  || fail "the follow-up run failed with the ignore set"
+# Exit status not asserted, for the reason given in 1b.
+_uni -ignore 'Name .unison.*.unison.tmp' >/dev/null 2>&1 || :
+[ -f "$R/big.bin" ] \
+  || fail "the follow-up run with the ignore set did not deliver the real file,
+  so the cleanup assertion below would pass for the wrong reason"
 [ -z "$(_crumbs_in "$R")" ] \
   || fail "WITH the Tier 0 ignore set, unison left its own temp behind:
   $(_crumbs_in "$R") -- the ignore IS blocking cleanup, which would make the
