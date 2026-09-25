@@ -7,6 +7,7 @@
 #   charon check  [profile]        audit; non-zero on drift
 #   charon status                  sources, profiles, and where things live
 #   charon seed   [--priority]     bulk-populate the cache from the source
+#   charon sweep  [profile]        delete Unison temps orphaned on a replica
 #   charon install | uninstall     provision (or remove) the units
 #   charon source <list|show|probe|up|down> [name]
 #
@@ -32,6 +33,9 @@ usage: charon <command> [args...]
   check  [profile]     audit; non-zero on drift
   status               sources, profiles, and the artifacts they generate
   seed   [--priority]  bulk-populate the cache straight from the source
+  sweep  [profile]     delete Unison transfer temps orphaned on either replica
+                       (they are never content; see charon(1) for why they
+                       cannot simply be kept off the remote)
   install              install the units, profiles, and timers
   uninstall            remove them
   source <list|show|probe|up|down> [name]
@@ -72,6 +76,7 @@ case "${1:-}" in
              --priority|-p) _sync seed ;;
              *) _sync seed-full ;;
            esac ;;
+  sweep)   shift; _sync sweep "$@" ;;
   install) shift
            # The MOUNT half only for sources charon actually mounts. It used to
            # run unconditionally, so a setup whose only source is PROVIDER=none

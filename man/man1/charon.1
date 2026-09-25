@@ -28,6 +28,19 @@ Sources, profiles, and the artifacts they generate.
 Bulk-populate the cache straight from the source, which is far faster than a
 cold reconcile over a network filesystem.
 .TP
+.B charon sweep " " [profile]
+Delete Unison transfer temps
+.RB ( .unison.\| *\| .unison.tmp )
+orphaned on either replica. These are never content, so removing one costs at
+most a re-transfer. Only temps older than
+.B CHARON_CRUMB_AGE_MIN
+minutes (default 1440, one day) are removed, because a recent one may be the
+live resume point of an interrupted transfer, and on a shared remote it may
+belong to another machine. Runs under the sync lock and does nothing while a
+pass is in flight. See
+.B ORPHANED TRANSFER TEMPS
+for why they cannot simply be kept off the remote.
+.TP
 .B charon install " " | " " uninstall
 Provision the units, profiles and timers, or remove them.
 .B uninstall
@@ -152,6 +165,14 @@ an SSH host to copy the rclone remote stanza from (first-machine bootstrap).
 an optional command
 .RB ( "flag <id> <msg>" " / " "clear <id>" " / " list )
 charon calls on sync faults; empty = no notify.
+.TP
+.B CHARON_CRUMB_AGE_MIN
+how old, in minutes, an orphaned Unison transfer temp must be before
+.B charon sweep
+will remove it, and before
+.B charon check
+will report it (default 1440, one day). See
+.BR "ORPHANED TRANSFER TEMPS" .
 .SH TRAITS
 Whether a backend folds case, carries mtimes, has Unix permissions or symlinks
 is a fact about the backend, not a preference, and a wrong answer is expensive:
@@ -174,6 +195,34 @@ Because the profile is derived from them, re-probing makes the live profile
 stale and
 .B charon check
 says so: probe, check, install.
+.SH ORPHANED TRANSFER TEMPS
+Unison stages an in-flight file as
+.I .unison.<name>.<hash>.unison.tmp
+in the
+.I destination
+directory, then renames it into place. The temp is therefore on whichever
+replica is being written to, including a remote one, and that cannot be
+changed: rename(2) does not cross filesystems, so staging it elsewhere would
+forfeit atomicity and briefly expose a partial file under the real name. The
+temp doubles as the resume point for an interrupted transfer. Unison offers no
+preference to relocate it.
+.PP
+None of this is Unison's own state, which lives entirely outside both replicas
+in
+.IR $UNISON_DIR .
+A temp is payload, and Unison deletes it itself the next time it propagates
+that path successfully.
+.PP
+A temp becomes permanent litter in exactly one situation: the path stops
+needing propagation while one is outstanding. A profile that fails the same
+propagation every pass produces this, because the temp is never consumed and,
+once the replicas agree by other means, Unison never revisits the path.
+.B charon check
+reports such temps but does
+.I not
+treat them as drift, since no amount of re-provisioning clears them;
+.B charon sweep
+is what removes them.
 .SH EXIT STATUS
 .B charon sync
 distinguishes a pass that did WORK from one that did NOTHING, because the two

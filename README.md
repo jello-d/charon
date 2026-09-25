@@ -14,6 +14,7 @@ One command, `charon`.
     charon check  [profile]        audit; non-zero on drift
     charon status                  sources, profiles, and what they generate
     charon seed   [--priority]     bulk-populate the cache from the source
+    charon sweep  [profile]        delete orphaned Unison transfer temps
     charon install | uninstall     provision (or remove) the units
     charon source <list|show|probe|up|down> [name]
 

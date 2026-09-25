@@ -80,6 +80,21 @@ EXAMPLE_CONF="$CHARON_LIBEXEC/../share/charon/example.conf"
 LOCKDIR="$HOME/.cache"
 LOCKFILE="$LOCKDIR/charon-sync.lock"
 
+# Unison's transfer temps, named ONCE. This glob is both the Tier 0 `ignore`
+# the prf template renders and the thing `sweep` deletes, and those two must
+# never be able to disagree: an ignore that does not match what the sweeper
+# looks for would delete live content, and a sweeper that does not match the
+# ignore would leave litter the reconciler has already been told to overlook.
+# Substituted into prf:charon as @CRUMB_GLOB@, so the rendered line is
+# byte-identical to the one it replaced (pinned by test/sweep.t).
+CRUMB_GLOB='.unison.*.unison.tmp'
+# How old a temp must be before `sweep` will delete it. See the sweep section
+# for why an age gate is the safety property: a RECENT temp may be the live
+# resume point of an interrupted transfer, and on a shared remote it may be
+# another box's. Here with the constants rather than beside its functions
+# because usage() prints it and is defined long before them.
+CHARON_CRUMB_AGE_MIN=${CHARON_CRUMB_AGE_MIN:-1440}   # 1 day
+
 # A SKIPPED pass is neither a success nor a fault, and conflating it with
 # success cost real time: a detached archive rebuild reported `documents EXIT=0`
 # and `media EXIT=0` in the SAME SECOND it started, which reads as "rebuilt" and
@@ -128,6 +143,9 @@ modes:
   run [profile] sync one profile by name, or all (default)
   seed          bulk-seed the priority subtrees from their sources
   seed-full     bulk-seed the full configured tree into the cache (fast)
+  sweep [prof]  delete Unison transfer temps orphaned on either replica
+                (older than CHARON_CRUMB_AGE_MIN=${CHARON_CRUMB_AGE_MIN}
+                minutes; a recent one may be a live resume point)
   install       install Unison profiles, systemd units/timers, and seed
   uninstall     remove those units/timers/profiles (NOT the cache or config)
   status        what is true now: sources, profiles, last runs, next runs
@@ -751,6 +769,7 @@ render_prf() {   # <profile>
     | sed -e "s|@MOUNT_ROOT@|$_mroot|g" \
           -e "s|@CACHE_ROOT@|$_croot|g" \
           -e "s|@LABEL@|$_label|g" \
+          -e "s|@CRUMB_GLOB@|$CRUMB_GLOB|g" \
           -e "s|@PREFER_NOTE@|$_note|" \
           -e "s|@PREFER@|$_prefer|"
 
@@ -987,6 +1006,119 @@ seed_full() {
   done
   log_info "seed-full: bulk seed finished (rc $_rc); unison reconcile kicked"
   return "$_rc"
+}
+
+#### sweeping unison's orphaned transfer temps ####
+# WHY THIS IS A SWEEP AND NOT A PREVENTION (all of it MEASURED 2026-09-25 in a
+# scratch pair; test/sweep.t reproduces the load-bearing parts).
+#
+# A crumb is NOT unison state. Unison's state -- the archives -- already lives
+# wholly outside both replicas in UNISON_DIR, so none of it reaches the remote.
+# `.unison.<name>.<hash>.unison.tmp` is the IN-FLIGHT CONTENT of a file being
+# written to the destination, staged in the destination DIRECTORY so the last
+# step can be an atomic rename(). rename() does not cross filesystems, so the
+# temp for a remote-bound transfer cannot be staged locally without giving up
+# atomicity -- a partially written file would be visible at the real name, on
+# the remote. Unison offers no preference to relocate it, and the temp doubles
+# as the RESUME point (the manual: copyprogrest is used "when Unison sees a
+# partially transferred temp file on the receiving host").
+#
+# Unison DELETES its own temp the next time it propagates that path
+# SUCCESSFULLY -- with the Tier 0 ignore set or not, so the ignore never
+# blocked cleanup. A temp therefore becomes permanent litter in exactly one
+# situation: the path stops needing propagation while a temp is outstanding.
+# That is what a WEDGED profile manufactures. Every pass fails so the temp is
+# never consumed, and once the replicas agree unison reports "Nothing to do"
+# and never revisits the path again. That is the whole of our 2026-09-24
+# incident, so the real fix upstream of this verb is to stop profiles wedging.
+#
+# Hence: out-of-band by necessity, AGE-GATED by safety. A recent temp may be
+# the live resume point of an interrupted transfer. Deleting one is never
+# destructive (it costs a re-transfer, and it is by definition not content),
+# but there is no reason to pay that cost, and on a SHARED remote the
+# outstanding transfer may be another box's. The gate is CHARON_CRUMB_AGE_MIN,
+# defined with the constants at the top of this file.
+
+# Orphaned crumbs under one root, one per line. Callers MUST read this with
+# `while IFS= read -r` from a redirect, never `for x in $(...)` and never
+# through a pipe: these are FILENAMES (this Drive is full of spaces) and a
+# pipe would put the reader's counters in a subshell where they cannot survive.
+crumbs_in() {   # <root>
+  [ -d "$1" ] || return 0
+  find "$1" -type f -name "$CRUMB_GLOB" -mmin "+$CHARON_CRUMB_AGE_MIN" \
+    2>/dev/null
+}
+
+# Both roots of every profile named, or of all of them. Scoped to the
+# configured subtrees on purpose: charon reports on the trees it manages, not
+# on whatever else shares the remote.
+crumb_roots() {   # [profile]
+  for _crp in ${1:-$(profile_names)}; do
+    _crr=$(resolve_profile_roots "$_crp" 2>/dev/null) || continue
+    printf '%s\n' "${_crr%%|*}"                    # mount side
+    _crt=${_crr#*|}; printf '%s\n' "${_crt%%|*}"   # cache side
+  done
+}
+
+# count and total bytes of the orphaned crumbs, as "<count> <bytes>".
+crumb_tally() {   # [profile]
+  _ctl=$(mktemp) || return 1
+  crumb_roots "${1:-}" | while IFS= read -r _ctr; do
+    crumbs_in "$_ctr"
+  done >"$_ctl"
+  _ctn=0; _ctb=0
+  while IFS= read -r _ctf; do
+    [ -n "$_ctf" ] || continue
+    _cts=$(stat -c %s "$_ctf" 2>/dev/null) || _cts=0
+    _ctn=$((_ctn + 1)); _ctb=$((_ctb + _cts))
+  done <"$_ctl"
+  rm -f "$_ctl"
+  printf '%s %s' "$_ctn" "$_ctb"
+}
+
+# Delete them. Under the sync LOCK, because a pass in flight owns its temps and
+# a crumb that is a live resume point must not be pulled out from under it.
+do_sweep() {   # [profile]
+  _swp=${1:-}
+  if [ -n "$_swp" ] && [ ! -f "$PROFILES_DIR/$_swp.conf" ]; then
+    log_error "unknown profile '$_swp'"; return 1
+  fi
+  mkdir -p "$LOCKDIR"
+  exec 9>"$LOCKFILE"
+  if ! flock -n 9 2>/dev/null; then
+    # WARN, not INFO: charon-sync pins LOG_LEVEL 2, so an INFO reason is
+    # discarded and a sweep that did nothing would say nothing at all.
+    log_warn "sweep: a sync holds the lock; nothing swept (try again after it)"
+    return "$EX_SKIP"
+  fi
+  _swl=$(mktemp) || return 1
+  crumb_roots "$_swp" | while IFS= read -r _swr; do
+    crumbs_in "$_swr"
+  done >"$_swl"
+  _swn=0; _swb=0; _swf=0
+  while IFS= read -r _swc; do
+    [ -n "$_swc" ] || continue
+    _sws=$(stat -c %s "$_swc" 2>/dev/null) || _sws=0
+    if rm -f -- "$_swc" 2>/dev/null; then
+      log_info "sweep: removed $_swc ($_sws bytes)"
+      _swn=$((_swn + 1)); _swb=$((_swb + _sws))
+    else
+      # Loud, never silent: a crumb charon can SEE and cannot remove is drift a
+      # human has to know about (a read-only remote, a permission problem).
+      log_error "sweep: could NOT remove $_swc"
+      _swf=$((_swf + 1))
+    fi
+  done <"$_swl"
+  rm -f "$_swl"
+  flock -u 9 2>/dev/null; exec 9>&-
+  if [ "$_swn" -eq 0 ] && [ "$_swf" -eq 0 ]; then
+    log_info "sweep: no orphaned unison temps older than"\
+             "${CHARON_CRUMB_AGE_MIN}m"
+  else
+    log_info "sweep: removed $_swn orphaned unison temp(s), $_swb bytes"
+  fi
+  [ "$_swf" -eq 0 ] || return 1
+  return 0
 }
 
 # The GATE for one profile:  0 go / EX_SKIP skip cheaply / 1 fault (notified).
@@ -1348,6 +1480,28 @@ check_profile_health() {   # <profile>
   return $_phr
 }
 
+# Orphaned unison temps are LITTER, and litter is deliberately NOT drift: this
+# reports and returns 0. Making it fail would put `charon check` into exactly
+# the trap the 2026-09-24 incident exposed -- an integrator turns a non-zero
+# check into drift, runs apply, and apply has no verb that clears it, so the
+# provision loop spins forever on something harmless. The remedy is a SEPARATE
+# verb a human (or a cron) invokes, and check's job is only to stop the litter
+# being invisible.
+# It scans the MOUNT, which costs a few seconds through FUSE. That is the price
+# of an honest answer: the crumbs that matter are the ones on the remote, and a
+# cache-only scan would have reported zero all through the incident.
+check_crumbs() {
+  # crumb_tally returns "<count> <bytes>" on one line; splitting it into two
+  # integers is the intent, not an oversight.
+  # shellcheck disable=SC2046
+  set -- $(crumb_tally)
+  [ "${1:-0}" -gt 0 ] || return 0
+  echo "  [WARN] $1 orphaned unison temp(s) on the configured trees"\
+       "(${2:-0} bytes), all older than ${CHARON_CRUMB_AGE_MIN}m:"\
+       "run '${APP_NAME%% *} sweep'"
+  return 0
+}
+
 # Audit the notify seam AS BAKED INTO THE UNIT, probed with the UNIT's PATH and
 # not this shell's. Checking $CHARON_NOTIFY against an interactive PATH is how
 # the seam looked healthy while being unresolvable where it actually runs:
@@ -1419,6 +1573,7 @@ do_check() {
     check_profile_health "$p" || _rc=1
   done
   [ -n "$_any" ] || echo "  [WARN] no profiles configured ($PROFILES_DIR)"
+  check_crumbs
   check_notify_seam || _rc=1
   return $_rc
 }
@@ -1456,6 +1611,7 @@ case "$MODE" in
     ;;
   seed)      seed_priority ;;
   seed-full) seed_full ;;
+  sweep)     do_sweep "${2:-}" ;;
   install)   do_install ;;
   uninstall) do_uninstall ;;
   config|status) do_status ;;
@@ -1481,7 +1637,7 @@ copyonconflict = true
 # files, an IDENTICAL set on both sides (the proof they were synced, not
 # independently stranded), 54 MB each way. Ignoring them makes the sync blind to
 # its own litter; sweeping it is an out-of-band job.
-ignore = Name .unison.*.unison.tmp
+ignore = Name @CRUMB_GLOB@
 ignore = Name .charon-probe
 @PREFER_NOTE@
 prefer = @PREFER@
