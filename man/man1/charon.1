@@ -37,7 +37,7 @@ The BACKSTOP sweep of Unison transfer temps
 .RB ( .unison.\| *\| .unison.tmp )
 orphaned on either replica. Normally there is nothing for it to do: each pass
 already cleans up surgically after any path it watched settle, and this runs
-daily to catch what no pass could know about (a crash before the record was
+on a timer to catch what no pass could know about (a crash before the record was
 written, litter from an older version, or another machine's residue). These are
 never content, so removing one costs at most a re-transfer. Only temps older
 than
@@ -52,8 +52,10 @@ for why they cannot simply be kept off the remote.
 .B charon install " " | " " uninstall
 Provision the units, profiles and timers, or remove them. This is also what
 arms the
-.B daily sweep timer
+.B sweep timer
 described under ORPHANED TRANSFER TEMPS; set
+.B SWEEP=weekly
+to slow it down, or
 .B SWEEP=off
 if you would rather collect litter by hand. Installing the
 .I package
@@ -96,12 +98,14 @@ holds the few settings that belong to the install rather than to any one source
 or profile. It is optional; the defaults are what charon does with no file at
 all.
 .TP
-.B SWEEP=daily " " | " " off
-whether
+.B SWEEP=daily " " | " " weekly " " | " " off
+how often
 .B charon install
-arms the daily sweep of orphaned Unison transfer temps. Default
+arms the sweep of orphaned Unison transfer temps. Default
 .BR daily .
-With
+.B weekly
+suits a machine that syncs little, since the per-pass cleanup already handles
+the common case and this is only the backstop. With
 .B off
 no timer is installed, nothing is collected automatically,
 .B charon sweep
@@ -270,9 +274,12 @@ SETTLED gets its temps removed at once, on both replicas, with no age gate:
 settling is proof that Unison is done with the path, rather than a guess. This
 is keyed on settling and deliberately not on failure, because at the moment a
 path fails its temp is most likely still the resume point for the next attempt.
-Anything the per-pass cleanup cannot know about is caught by the daily
+Anything the per-pass cleanup cannot know about is caught by the timed
 .BR "charon sweep" ,
-which is why that remains age-gated.
+which is why that remains age-gated. Its cadence is
+.B SWEEP
+in
+.IR charon.conf .
 .PP
 .B charon check
 reports whatever is left but does

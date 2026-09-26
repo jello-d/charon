@@ -51,7 +51,7 @@ Three kinds of file, all KEY=VALUE and read literally.
 The **global** file (`charon.conf`) is optional and holds only what belongs to
 the install rather than to any one tree:
 
-    SWEEP=daily                # or `off`: install arms no daily sweep timer
+    SWEEP=daily                # daily | weekly | off (off: no timer at all)
     CRUMB_AGE_MIN=1440         # minutes before an orphaned Unison temp goes
 
 With `SWEEP=off` nothing is collected automatically, `charon sweep` still works
@@ -113,7 +113,7 @@ There is deliberately **no working-link key**: charon manages a cache, and
 where a desktop surfaces that cache is layout an integrator owns.
 
 `charon sync install` generates a Unison profile + a systemd timer per profile,
-arms a daily sweep timer for orphaned Unison temps, seeds the priority subtrees
+arms a sweep timer for orphaned Unison temps, seeds the priority subtrees
 synchronously, then bulk-seeds the full tree in the background. Installing the
 *package* schedules nothing; only `install` does. Ships
 `share/charon/example.conf`, `example-source.conf` and `example-charon.conf`;

@@ -117,12 +117,19 @@ config_get() {   # <KEY>
 sweep_mode() {
   _sm=${CHARON_SWEEP:-$(config_get SWEEP)}
   case ${_sm:-daily} in
-    daily) printf 'daily' ;;
-    off)   printf 'off' ;;
-    *)     log_warn "SWEEP='$_sm' is not 'daily' or 'off'; treating as daily"
-           printf 'daily' ;;
+    daily)  printf 'daily' ;;
+    weekly) printf 'weekly' ;;
+    off)    printf 'off' ;;
+    *)      log_warn "SWEEP='$_sm' is not 'daily', 'weekly' or 'off';"\
+                     "treating as daily"
+            printf 'daily' ;;
   esac
 }
+
+# Is a sweep SCHEDULED at all? Asked in three places, so it is one function
+# rather than three comparisons against a list that has already grown once:
+# adding a cadence must not mean hunting for every `= off` in the file.
+sweep_scheduled() { [ "$(sweep_mode)" != off ]; }
 
 # How old a temp must be before `sweep` will delete it. Env wins, then the
 # global config, then the built-in day. See the sweep section for why an age
@@ -1015,7 +1022,14 @@ render_sweep_unit() {
   extract_section "unit:charon-sweep.service" \
     | sed -e "s|@CHARON_REMOTE@|$CHARON_REMOTE|g"
 }
-render_sweep_timer() { extract_section "timer:charon-sweep.timer"; }
+# The cadence is substituted rather than hardcoded, so switching SWEEP
+# re-renders the timer and check's diff notices. systemd accepts 'daily' and
+# 'weekly' as OnCalendar shorthands directly, so the mode name IS the value.
+render_sweep_timer() {
+  _rsm=$(sweep_mode)
+  [ "$_rsm" != off ] || return 1
+  extract_section "timer:charon-sweep.timer" | sed -e "s|@CADENCE@|$_rsm|g"
+}
 
 render_timer() {   # <profile>
   _iv=$(profile_get "$1" INTERVAL); _bt=$(profile_get "$1" BOOT)
@@ -1128,10 +1142,10 @@ install_artifact() {   # <live-path> <renderer> [args...]
 }
 
 setup_sweep_units() {
-  if [ "$(sweep_mode)" = off ]; then
+  if ! sweep_scheduled; then
     if [ -f "$SYSTEMD_USER_DIR/charon-sweep.timer" ] \
        || [ -f "$SYSTEMD_USER_DIR/charon-sweep.service" ]; then
-      log_info "SWEEP=off: removing the daily sweep timer"
+      log_info "SWEEP=off: removing the sweep timer"
     fi
     if have_systemd; then
       systemctl --user disable --now charon-sweep.timer >/dev/null 2>&1 || :
@@ -1182,7 +1196,7 @@ setup_systemd_units() {
       || log_warn "could not enable charon-sync-$p.timer; '$p' will NOT sync"\
                   "on a schedule (check will say so)"
   done
-  if [ "$(sweep_mode)" = off ]; then
+  if ! sweep_scheduled; then
     return $_ssu
   fi
   systemctl --user enable --now charon-sweep.timer >/dev/null 2>&1 \
@@ -1795,7 +1809,7 @@ check_sweep_units() {
   # the choice is silently reverted on every provision sweep -- a fight the user
   # cannot win. So the declaration is asserted in BOTH directions, and what
   # would be drift here is the artifacts SURVIVING the switch to off.
-  if [ "$(sweep_mode)" = off ]; then
+  if ! sweep_scheduled; then
     for _cso in charon-sweep.timer charon-sweep.service; do
       if [ -e "$SYSTEMD_USER_DIR/$_cso" ]; then
         echo "  [FAIL] SWEEP=off but $_cso is still installed; it would keep"\
@@ -1826,7 +1840,7 @@ check_sweep_units() {
   # assertion depend on a tool's output text rather than its verdict, and it
   # cannot pass against the suite's stubs, which model the verdict.
   if systemctl --user is-enabled charon-sweep.timer >/dev/null 2>&1; then
-    echo "  [OK]   charon-sweep.timer enabled"
+    echo "  [OK]   charon-sweep.timer enabled ($(sweep_mode))"
   else
     echo "  [FAIL] charon-sweep.timer not enabled: orphaned Unison temps will"\
          "accumulate unswept (run '${APP_NAME} install')"
@@ -2176,15 +2190,15 @@ __SECTION_END__ unit:charon-sweep.service
 
 __SECTION_BEGIN__ timer:charon-sweep.timer
 [Unit]
-Description=daily charon sweep of orphaned Unison transfer temps
+Description=@CADENCE@ charon sweep of orphaned Unison transfer temps
 
 [Timer]
-OnCalendar=daily
+OnCalendar=@CADENCE@
 # Persistent=true here, UNLIKE the sync timers. A missed sync is caught by the
 # next interval a few minutes later, so replaying it at boot only duplicates
-# work; a missed DAILY sweep would otherwise wait a whole further day, and a
-# laptop that is off at the sweep hour is the normal case rather than the
-# exception.
+# work; a missed sweep would otherwise wait a whole further period, and a laptop
+# that is off at the sweep hour is the normal case rather than the exception.
+# It matters more the longer the period, which is why weekly is offered.
 Persistent=true
 # An hour of jitter because every box sharing a remote runs this, and there is
 # no reason for them all to delete the same objects in the same minute. The

@@ -169,6 +169,38 @@ _c install >/dev/null 2>&1 && _c install >/dev/null 2>&1 \
   || fail "a repeated SWEEP=off install failed"
 _c check >/dev/null 2>&1 || fail "check failed after a repeat off install"
 
+# ----------------------------------------------------------------- part 3b ---
+# WEEKLY is a third real cadence, not an alias, and the CADENCE has to reach the
+# generated timer -- otherwise `SWEEP=weekly` would silently still sweep daily,
+# which is the sort of setting-that-does-nothing this project keeps finding.
+printf 'SWEEP=weekly\n' > "$CFG/charon.conf"
+_c install >/dev/null 2>&1 || fail "install failed with SWEEP=weekly"
+[ -f "$SD/charon-sweep.timer" ] || fail "SWEEP=weekly installed no timer"
+[ -L "$WANTS/charon-sweep.timer" ] || fail "SWEEP=weekly did not enable it"
+grep -qx 'OnCalendar=weekly' "$SD/charon-sweep.timer" \
+  || fail "SWEEP=weekly did not reach the timer's OnCalendar:
+  $(grep OnCalendar "$SD/charon-sweep.timer")"
+_c check >"$T/chk" 2>&1 || fail "check failed on SWEEP=weekly: $(cat "$T/chk")"
+grep -q 'charon-sweep.timer enabled (weekly)' "$T/chk" \
+  || fail "check does not report WHICH cadence is armed: $(cat "$T/chk")"
+
+# CHANGING THE CADENCE IS DRIFT UNTIL INSTALL RE-RENDERS. The timer is a
+# generated artifact, so a config change that does not reach it must be caught
+# by the diff like any other -- that is the whole reason check diffs rather than
+# merely looking for the file.
+printf 'SWEEP=daily\n' > "$CFG/charon.conf"
+_c check >"$T/chk" 2>&1 \
+  && fail "check passed with SWEEP=daily while the installed timer still says
+  weekly; a config change that never reached the artifact is exactly the drift
+  the diff exists to catch"
+grep -q '\[FAIL\].*charon-sweep.timer DIFFERS' "$T/chk" \
+  || fail "check did not name the timer as the drifted artifact:
+  $(cat "$T/chk")"
+_c install >/dev/null 2>&1 || fail "install failed switching weekly -> daily"
+grep -qx 'OnCalendar=daily' "$SD/charon-sweep.timer" \
+  || fail "switching back to daily did not re-render OnCalendar"
+_c check >/dev/null 2>&1 || fail "check failed after re-rendering to daily"
+
 # An unrecognised value behaves as DAILY and says so: leaving litter on someone
 # else's remote is the worse failure, and a typo must not quietly disable a
 # safety feature.
@@ -177,6 +209,9 @@ _c install 2>"$T/err" >/dev/null || fail "install failed on a bad SWEEP value"
 [ -f "$SD/charon-sweep.timer" ] \
   || fail "an unrecognised SWEEP value silently DISABLED the sweep; it must
   fall back to daily"
+grep -qx 'OnCalendar=daily' "$SD/charon-sweep.timer" \
+  || fail "an unrecognised SWEEP value did not fall back to the DAILY cadence:
+  $(grep OnCalendar "$SD/charon-sweep.timer")"
 grep -q "SWEEP='yes-please'" "$T/err" \
   || fail "nothing warned about the unrecognised SWEEP value: $(cat "$T/err")"
 
@@ -186,6 +221,21 @@ grep -q "SWEEP='yes-please'" "$T/err" \
 # shell changed nothing about what actually ran.
 CHARON_LIB_ONLY=1 . "$HERE/libexec/charon-sync"
 _self=$HERE/libexec/charon-sync
+
+# THE RENDERER REFUSES 'off' ON ITS OWN, not only because its callers check
+# first. Nothing reaches it in that state today, so this is the assertion that
+# keeps it safe if something ever does: rendering would otherwise emit a unit
+# saying `OnCalendar=off`, which systemd rejects, and charon would have written
+# a broken timer rather than declining to write one.
+_ro=$(CHARON_SWEEP=off render_sweep_timer 2>/dev/null) \
+  && fail "render_sweep_timer produced a timer for SWEEP=off"
+[ -z "$_ro" ] \
+  || fail "render_sweep_timer emitted output for SWEEP=off: $_ro"
+for _m in daily weekly; do
+  CHARON_SWEEP=$_m render_sweep_timer 2>/dev/null \
+    | grep -qx "OnCalendar=$_m" \
+    || fail "render_sweep_timer did not honour CHARON_SWEEP=$_m"
+done
 
 printf 'SWEEP=daily\nCRUMB_AGE_MIN=60\n' > "$CFG/charon.conf"
 [ "$(crumb_age_min)" = 60 ] \
