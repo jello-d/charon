@@ -81,9 +81,34 @@ _c sync run docs >/dev/null 2>&1 \
   || fail "a stale unit's command line would fail against this version"
 _c mount run --help >/dev/null 2>&1 || :
 
+# --- the daily sweep backstop is installed, and runs the flattened verb ---
+# It is a generated artifact like any other, so it must be WRITTEN by install
+# and REMOVED by uninstall. An unenabled sweep timer means orphaned Unison
+# temps accumulate on the remote with nothing ever collecting them, which is
+# silent by nature: nothing breaks, the litter just grows.
+swp=$XDG_CONFIG_HOME/systemd/user/charon-sweep.service
+swt=$XDG_CONFIG_HOME/systemd/user/charon-sweep.timer
+[ -f "$swp" ] || fail "install wrote no charon-sweep.service"
+[ -f "$swt" ] || fail "install wrote no charon-sweep.timer"
+grep -q '^ExecStart=.*/charon sweep$' "$swp" \
+  || fail "the sweep unit does not run the flattened 'charon sweep' verb"
+# 75 is charon's SKIPPED, which a sweep returns when a pass holds the lock. If
+# systemd treated that as a failure, a box that happens to be mid-pass at the
+# sweep hour would carry a failed unit forever for doing the right thing.
+grep -q '^SuccessExitStatus=75$' "$swp" \
+  || fail "the sweep unit does not treat charon's SKIPPED (75) as success"
+# Persistent, unlike the sync timers: a missed sync is caught minutes later by
+# the next interval, but a missed DAILY sweep would wait another whole day, and
+# a laptop asleep at the sweep hour is the normal case.
+grep -q '^Persistent=true$' "$swt" \
+  || fail "the daily sweep timer is not Persistent; a box that was off at the
+  sweep hour would skip a whole day"
+
 # --- uninstall removes the machinery and NOTHING else ---
 printf 'data\n' > "$T/.testremote/Docs/keep.txt"
 _c uninstall >/dev/null 2>&1 || fail "charon uninstall errored"
+[ -e "$swp" ] && fail "uninstall left charon-sweep.service" || :
+[ -e "$swt" ] && fail "uninstall left charon-sweep.timer" || :
 [ -e "$XDG_CONFIG_HOME/systemd/user/charon-sync@.service" ] \
   && fail "uninstall left the service template" || :
 [ -e "$T/.unison/charon-docs.prf" ] && fail "uninstall left the prf" || :

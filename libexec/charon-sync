@@ -959,6 +959,17 @@ sync_dropin_file() {   # <profile>
   printf '%s/charon-sync@%s.service.d/10-source.conf' "$SYSTEMD_USER_DIR" "$1"
 }
 
+# The BACKSTOP pair: a daily blind sweep, for litter the per-pass surgical
+# cleanup could not know about. It is not redundant with it -- a crash before
+# the state file was written, litter left by an older charon, a name whose
+# directory has since been renamed, or simply another machine's residue all
+# reach the remote without ever appearing in this box's settled list.
+render_sweep_unit() {
+  extract_section "unit:charon-sweep.service" \
+    | sed -e "s|@CHARON_REMOTE@|$CHARON_REMOTE|g"
+}
+render_sweep_timer() { extract_section "timer:charon-sweep.timer"; }
+
 render_timer() {   # <profile>
   _iv=$(profile_get "$1" INTERVAL); _bt=$(profile_get "$1" BOOT)
   _jt=$(profile_get "$1" JITTER)
@@ -1027,6 +1038,8 @@ setup_systemd_units() {
   # timed --user runs (no shell env) use the config this install resolved.
   render_sync_unit "$(resolved_notify)" \
     >"$SYSTEMD_USER_DIR/charon-sync@.service"
+  render_sweep_unit  >"$SYSTEMD_USER_DIR/charon-sweep.service"
+  render_sweep_timer >"$SYSTEMD_USER_DIR/charon-sweep.timer"
   for p in $(profile_names); do
     write_profile_artifacts "$p"
   done
@@ -1044,6 +1057,7 @@ setup_systemd_units() {
   for p in $(profile_names); do
     systemctl --user enable --now "charon-sync-$p.timer" >/dev/null 2>&1
   done
+  systemctl --user enable --now charon-sweep.timer >/dev/null 2>&1
 }
 
 # Fast, resumable initial population of specific subtrees straight from the
@@ -1148,6 +1162,83 @@ seed_full() {
 # but there is no reason to pay that cost, and on a SHARED remote the
 # outstanding transfer may be another box's. The gate is CHARON_CRUMB_AGE_MIN,
 # defined with the constants at the top of this file.
+
+# --- the surgical half: clean up the instant a path is known to have settled --
+# The blind sweep below can only ask "is this old enough to be safe?", because
+# it has no idea whether unison still wants a given temp. After a pass, charon
+# DOES know, and this is where that knowledge gets spent.
+#
+# WHY "SETTLED" AND NOT "FAILED". The obvious trigger is the wrong one: clean up
+# the paths that just FAILED. At that moment the temp is most likely to be a
+# legitimate RESUME POINT -- it exists precisely so the next pass continues
+# instead of re-transferring, which on a cold FUSE tree is the difference
+# between seconds and an hour. And the orphaning condition is "the path stopped
+# needing propagation while a temp was outstanding", which is NOT OBSERVABLE at
+# failure time: a path that just failed still needs propagating.
+#
+# The observable moment is the one AFTER: a path that was failing and is not in
+# the new failure list has settled. Either unison propagated it (and consumed
+# its own temp, so there is nothing to find) or it no longer needs propagating
+# at all -- which is the orphan case exactly, and now provable rather than
+# guessed. So no age gate is needed here: this is not "probably litter by
+# tomorrow", it is litter now.
+
+# The paths that WERE failing and are not any more, one per line. Pure: no
+# logging, no deleting, so it can be tested on its own.
+settled_paths() {   # <profile> <new-failure-set-file, sorted>
+  [ -f "$(failed_file "$1")" ] || return 0
+  failed_paths "$1" | sort -u | comm -23 - "$2"
+}
+
+# Remove the crumbs belonging to ONE path, on BOTH replicas.
+#
+# MATCHED LITERALLY, NOT BY GLOB. The obvious spelling is
+# `"$dir/.unison.$base."*.unison.tmp`, but $base is a FILENAME and the shell
+# would read any '[', '*' or '?' in it as pattern syntax -- so the one class of
+# name this project keeps getting bitten by would silently not match. Listing
+# the directory and comparing strings cannot misread a name. It fails SAFE
+# either way (a miss leaves litter for the blind sweep; it can never delete the
+# wrong file), but a silent miss is exactly the kind of thing nobody notices.
+sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path>
+  _spd=$(dirname -- "$3"); _spb=$(basename -- "$3")
+  _spn=0
+  for _spr in "$1" "$2"; do
+    [ -n "$_spr" ] || continue
+    _spdir=$_spr/$_spd
+    [ -d "$_spdir" ] || continue
+    for _spc in "$_spdir"/.unison.*.unison.tmp; do
+      [ -f "$_spc" ] || continue
+      # .unison.<name>.<hash>.unison.tmp -> <name>, with the hash being the
+      # LAST dot-component (a name of its own may well contain dots).
+      _spm=$(basename -- "$_spc"); _spm=${_spm#.unison.}
+      _spm=${_spm%.unison.tmp}; _spm=${_spm%.*}
+      [ "$_spm" = "$_spb" ] || continue
+      if rm -f -- "$_spc" 2>/dev/null; then
+        log_info "settled '$3': removed orphaned temp $_spc"
+        _spn=$((_spn + 1))
+      else
+        log_warn "settled '$3': could NOT remove $_spc"
+      fi
+    done
+  done
+  return 0
+}
+
+# Clean up after every path a pass showed to have settled.
+#
+# ASSUMES THE CALLER HOLDS THE SYNC LOCK, and must: it runs from inside a pass,
+# which took the lock in run_with_lock and holds it for the whole pass. Taking
+# it again here would skip every time.
+sweep_settled() {   # <profile> <settled paths, newline separated>
+  [ -n "$2" ] || return 0
+  _ssr=$(resolve_profile_roots "$1" 2>/dev/null) || return 0
+  _ssm=${_ssr%%|*}; _sst=${_ssr#*|}; _ssc=${_sst%%|*}
+  printf '%s\n' "$2" | while IFS= read -r _ssp; do
+    [ -n "$_ssp" ] || continue
+    sweep_path_crumbs "$_ssm" "$_ssc" "$_ssp"
+  done
+  return 0
+}
 
 # Orphaned crumbs under one root, one per line. Callers MUST read this with
 # `while IFS= read -r` from a redirect, never `for x in $(...)` and never
@@ -1353,6 +1444,16 @@ run_sync_profile() {
     || CAPTURE=
   run_unison_guarded "$UNISON_PROFILE" "$CAPTURE"; RET=$?
   if [ -n "$CAPTURE" ]; then
+    # SETTLED FIRST, because it is a diff against the record that
+    # record_failures is about to overwrite. Only from a pass whose list is
+    # complete: treating a truncated list as "these paths are fine now" is what
+    # would delete a temp a resume still needs.
+    if unison_rc_reported "$RET"; then
+      NEWSET=$CAPTURE.set
+      parse_unison_failures "$CAPTURE" >"$NEWSET" 2>/dev/null || : >"$NEWSET"
+      sweep_settled "$PROFILE" "$(settled_paths "$PROFILE" "$NEWSET")"
+      rm -f "$NEWSET"
+    fi
     record_failures "$PROFILE" "$RET" "$CAPTURE"
     rm -f "$CAPTURE"
   fi
@@ -1535,7 +1636,35 @@ check_service_template() {
   else
     echo "  [FAIL] charon-sync@.service not registered"; _r=1
   fi
+  check_sweep_units || _r=1
   return $_r
+}
+
+# The daily sweep pair, diffed like every other generated artifact. A generated
+# file nothing compares is invisible drift, and that lesson has now been learned
+# here three times (the prf, then the mount unit, then the sync unit).
+check_sweep_units() {
+  _csr=0
+  _crt=${TMPDIR:-/tmp}/charon-sweep-render.$$
+  render_sweep_unit >"$_crt"
+  check_generated "charon-sweep.service" \
+    "$SYSTEMD_USER_DIR/charon-sweep.service" "$_crt" || _csr=1
+  render_sweep_timer >"$_crt"
+  check_generated "charon-sweep.timer" \
+    "$SYSTEMD_USER_DIR/charon-sweep.timer" "$_crt" || _csr=1
+  rm -f "$_crt"
+  # Gate on the EXIT STATUS, as every other check here does. Comparing
+  # is-enabled's stdout to "enabled" looks tidier and is wrong: it makes the
+  # assertion depend on a tool's output text rather than its verdict, and it
+  # cannot pass against the suite's stubs, which model the verdict.
+  if systemctl --user is-enabled charon-sweep.timer >/dev/null 2>&1; then
+    echo "  [OK]   charon-sweep.timer enabled"
+  else
+    echo "  [FAIL] charon-sweep.timer not enabled: orphaned Unison temps will"\
+         "accumulate unswept (run '${APP_NAME} install')"
+    _csr=1
+  fi
+  return $_csr
 }
 
 # Three questions per profile, because any one of them alone lies: is the timer
@@ -1730,6 +1859,9 @@ do_uninstall() {
     _dp=$(sync_dropin_file "$p"); rm -rf "${_dp%/*}"
   done
   rm -f "$SYSTEMD_USER_DIR/charon-sync@.service"
+  systemctl --user disable --now charon-sweep.timer >/dev/null 2>&1 || :
+  rm -f "$SYSTEMD_USER_DIR/charon-sweep.timer"
+  rm -f "$SYSTEMD_USER_DIR/charon-sweep.service"
   systemctl --user daemon-reload >/dev/null 2>&1 || :
   log_info "uninstall: the cache ($CHARON_CACHE) and config are UNTOUCHED"
 }
@@ -1848,6 +1980,45 @@ Environment=CHARON_NOTIFY=@CHARON_NOTIFY@
 SuccessExitStatus=75
 ExecStart=%h/.local/bin/charon sync %i
 __SECTION_END__ unit:charon-sync@.service
+
+
+__SECTION_BEGIN__ unit:charon-sweep.service
+[Unit]
+Description=charon sweep of orphaned Unison transfer temps
+
+[Service]
+Type=oneshot
+Environment=CHARON_REMOTE=@CHARON_REMOTE@
+# 75 is charon's SKIPPED: a sync pass held the lock, so this sweep did nothing
+# and tomorrow's will. Marking it a success keeps a box that happens to be
+# mid-pass at the sweep hour from accumulating a failed unit forever, which is
+# the same reasoning as the sync unit's own SuccessExitStatus.
+SuccessExitStatus=75
+ExecStart=%h/.local/bin/charon sweep
+__SECTION_END__ unit:charon-sweep.service
+
+
+__SECTION_BEGIN__ timer:charon-sweep.timer
+[Unit]
+Description=daily charon sweep of orphaned Unison transfer temps
+
+[Timer]
+OnCalendar=daily
+# Persistent=true here, UNLIKE the sync timers. A missed sync is caught by the
+# next interval a few minutes later, so replaying it at boot only duplicates
+# work; a missed DAILY sweep would otherwise wait a whole further day, and a
+# laptop that is off at the sweep hour is the normal case rather than the
+# exception.
+Persistent=true
+# An hour of jitter because every box sharing a remote runs this, and there is
+# no reason for them all to delete the same objects in the same minute. The
+# operation is idempotent, so this is tidiness rather than safety.
+RandomizedDelaySec=1h
+Unit=charon-sweep.service
+
+[Install]
+WantedBy=timers.target
+__SECTION_END__ timer:charon-sweep.timer
 
 
 __SECTION_BEGIN__ timer:charon-sync.timer

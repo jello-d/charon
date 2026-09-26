@@ -33,10 +33,14 @@ Bulk-populate the cache straight from the source, which is far faster than a
 cold reconcile over a network filesystem.
 .TP
 .B charon sweep " " [profile]
-Delete Unison transfer temps
+The BACKSTOP sweep of Unison transfer temps
 .RB ( .unison.\| *\| .unison.tmp )
-orphaned on either replica. These are never content, so removing one costs at
-most a re-transfer. Only temps older than
+orphaned on either replica. Normally there is nothing for it to do: each pass
+already cleans up surgically after any path it watched settle, and this runs
+daily to catch what no pass could know about (a crash before the record was
+written, litter from an older version, or another machine's residue). These are
+never content, so removing one costs at most a re-transfer. Only temps older
+than
 .B CHARON_CRUMB_AGE_MIN
 minutes (default 1440, one day) are removed, because a recent one may be the
 live resume point of an interrupted transfer, and on a shared remote it may
@@ -221,12 +225,20 @@ A temp becomes permanent litter in exactly one situation: the path stops
 needing propagation while one is outstanding. A profile that fails the same
 propagation every pass produces this, because the temp is never consumed and,
 once the replicas agree by other means, Unison never revisits the path.
+charon disposes of them in two layers. After every pass it compares the paths
+that failed against the paths that were failing before, and any path that has
+SETTLED gets its temps removed at once, on both replicas, with no age gate:
+settling is proof that Unison is done with the path, rather than a guess. This
+is keyed on settling and deliberately not on failure, because at the moment a
+path fails its temp is most likely still the resume point for the next attempt.
+Anything the per-pass cleanup cannot know about is caught by the daily
+.BR "charon sweep" ,
+which is why that remains age-gated.
+.PP
 .B charon check
-reports such temps but does
+reports whatever is left but does
 .I not
-treat them as drift, since no amount of re-provisioning clears them;
-.B charon sweep
-is what removes them.
+treat it as drift, since no amount of re-provisioning clears litter.
 .SH EXIT STATUS
 .B charon sync
 distinguishes a pass that did WORK from one that did NOTHING, because the two

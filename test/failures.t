@@ -287,4 +287,147 @@ printf '%s\n' "$_e2e" | grep -q '^D/' \
   && fail "the recorded path carries the SUBTREE prefix; unison reports
   relative to its roots, and charon's roots already include the subtree"
 
-pass "unison's failed paths parsed, gated, dated and reported, end to end"
+# ----------------------------------------------------------------- part 7 ----
+# THE SETTLE DIFF. A path that WAS failing and is not any more has settled;
+# anything still failing has not. This is the only moment the orphan condition
+# is observable, which is why cleanup is keyed on it rather than on failure.
+rm -rf "$T/state/failed"
+record_failures docs 2 "$T/out"    # 3 paths
+printf '%s\n' 'plain.txt' > "$T/newset"
+_st=$(settled_paths docs "$T/newset")
+_wantst='sub/Fenix Watchface - tuned.psp
+sub/second file.png'
+[ "$_st" = "$_wantst" ] || fail "settled_paths got:
+$_st
+want:
+$_wantst"
+# Still failing on everything: nothing has settled.
+parse_unison_failures "$T/out" > "$T/samenow"
+[ -z "$(settled_paths docs "$T/samenow")" ] \
+  || fail "settled_paths called a path settled while it was STILL failing,
+  which would delete a temp that the next pass still needs to resume from"
+# No prior record, nothing settled (a first-ever pass must not claim anything).
+rm -rf "$T/state/failed"
+[ -z "$(settled_paths docs "$T/newset")" ] \
+  || fail "settled_paths invented settled paths with no prior record"
+
+# ----------------------------------------------------------------- part 8 ----
+# THE SURGICAL REMOVAL, matched LITERALLY. The names here are the adversarial
+# ones: a glob-based matcher would silently miss every one of them, and a silent
+# miss in a cleanup is the kind nobody notices.
+mkdir -p "$T/mnt/d" "$T/cch/d"
+_mk() { printf 'x' > "$1"; }
+_mk "$T/mnt/d/.unison.odd[name.png.aaa111.unison.tmp"
+_mk "$T/cch/d/.unison.odd[name.png.bbb222.unison.tmp"
+_mk "$T/mnt/d/.unison.star*name.png.ccc333.unison.tmp"
+_mk "$T/mnt/d/.unison.with spaces.psp.ddd444.unison.tmp"
+_mk "$T/mnt/d/.unison.other.png.eee555.unison.tmp"   # a DIFFERENT path
+_mk "$T/mnt/d/real.png"                              # real content
+sweep_path_crumbs "$T/mnt" "$T/cch" 'd/odd[name.png'
+[ -e "$T/mnt/d/.unison.odd[name.png.aaa111.unison.tmp" ] \
+  && fail "a crumb for a name containing '[' was not removed: a glob matcher
+  reads '[' as a character class and silently matches nothing"
+[ -e "$T/cch/d/.unison.odd[name.png.bbb222.unison.tmp" ] \
+  && fail "the CACHE-side crumb survived; both replicas must be cleaned"
+sweep_path_crumbs "$T/mnt" "$T/cch" 'd/star*name.png'
+[ -e "$T/mnt/d/.unison.star*name.png.ccc333.unison.tmp" ] \
+  && fail "a crumb for a name containing '*' was not removed"
+sweep_path_crumbs "$T/mnt" "$T/cch" 'd/with spaces.psp'
+[ -e "$T/mnt/d/.unison.with spaces.psp.ddd444.unison.tmp" ] \
+  && fail "a crumb for a name containing spaces was not removed"
+# AND IT TOUCHED NOTHING ELSE. These are the controls: another path's crumb and
+# a real file. A matcher that over-reaches would take both.
+[ -f "$T/mnt/d/.unison.other.png.eee555.unison.tmp" ] \
+  || fail "sweep_path_crumbs removed ANOTHER path's crumb"
+[ -f "$T/mnt/d/real.png" ] \
+  || fail "sweep_path_crumbs removed real content"
+# A missing directory is not an error.
+sweep_path_crumbs "$T/mnt" "$T/cch" 'nope/gone.txt' \
+  || fail "sweep_path_crumbs failed on a path whose directory does not exist"
+
+# ----------------------------------------------------------------- part 9 ----
+# END TO END: a path fails, strands a crumb, then settles -- and the crumb goes
+# on the very next pass, with no age gate involved, because settling is proof
+# rather than a guess.
+command -v unison >/dev/null 2>&1 || {
+  pass "parse, gate, SINCE, report, settle diff and surgical removal"
+  exit 0
+}
+_c() {
+  PATH="$T/bin:/usr/bin:/bin" CHARON_CONFIG=$CFG CHARON_TRAITS_DIR=$T/st \
+    CHARON_STATE=$T/state UNISON_DIR=$T/uni XDG_CONFIG_HOME=$T/xdg \
+    sh "$HERE/bin/charon" "$@"
+}
+# Self-contained: parts 7 and 8 overwrote the record with canned data, so
+# establish a REAL failing path again rather than leaning on part 6.
+rm -rf "$T/state/failed"
+printf 'again\n' > "$T/src/D/settle me.psp"
+chmod a-w "$T/cache/D"
+_c sync docs >/dev/null 2>&1
+chmod u+w "$T/cache/D"
+failed_paths docs | grep -qx 'settle me.psp' \
+  || fail "the setup pass did not record the failing path; got:
+  $(failed_paths docs)"
+# Plant a crumb for it, in the DESTINATION directory. Its hash deliberately is
+# not one unison would compute, so unison itself will not consume it: what
+# removes it has to be charon's own settle cleanup.
+CRUMB="$T/cache/D/.unison.settle me.psp.f00d99.unison.tmp"
+printf 'partial' > "$CRUMB"
+[ -f "$CRUMB" ] || fail "could not plant the crumb"
+# Destination writable again: this pass propagates, the path settles, and its
+# crumb becomes litter by proof rather than by age.
+_c sync docs >/dev/null 2>&1
+[ -z "$(failed_paths docs)" ] \
+  || fail "the recovery pass still reports failures: $(failed_paths docs)"
+[ -e "$CRUMB" ] \
+  && fail "the crumb for a SETTLED path survived the pass that settled it;
+  the surgical cleanup did not fire (it is the whole point of parsing the
+  output at all)"
+
+# And the trust gate reaches this half too: with no prior record there is
+# nothing to settle, so a pass must not go hunting.
+printf 'orphan' > "$T/cache/D/.unison.unrelated.f00d99.unison.tmp"
+_c sync docs >/dev/null 2>&1
+[ -f "$T/cache/D/.unison.unrelated.f00d99.unison.tmp" ] \
+  || fail "a pass deleted a crumb for a path that was never in the failure
+  record; the surgical half must only ever act on a path it watched settle,
+  and the blind sweep is what handles everything else"
+
+# ---------------------------------------------------------------- part 10 ----
+# THE TRUST GATE, ON THE DELETING HALF. This is the one way the whole design
+# could destroy something: an INTERRUPTED pass prints a truncated failure list,
+# so a path that is still failing is simply absent from it, and reading that
+# absence as "settled" deletes a temp the next pass needs to resume from.
+#
+# A unison that exits 3 ("fatal error or execution interrupted") printing NO
+# failures is exactly that shape. With the gate, nothing happens. Without it,
+# every recorded path looks settled and its crumb goes.
+rm -rf "$T/state/failed"
+printf 'more\n' > "$T/src/D/keep my temp.psp"
+chmod a-w "$T/cache/D"
+_c sync docs >/dev/null 2>&1
+chmod u+w "$T/cache/D"
+failed_paths docs | grep -qx 'keep my temp.psp' \
+  || fail "setup for the interrupted-pass case recorded nothing"
+KEEP="$T/cache/D/.unison.keep my temp.psp.beef01.unison.tmp"
+printf 'partial' > "$KEEP"
+_before=$(failed_paths docs)
+
+cat > "$T/bin/unison" <<'EOF'
+#!/bin/sh
+# An INTERRUPTED unison: says nothing about failures, exits 3.
+exit 3
+EOF
+chmod +x "$T/bin/unison"
+_c sync docs >/dev/null 2>&1
+rm -f "$T/bin/unison"
+
+[ -f "$KEEP" ] \
+  || fail "an INTERRUPTED pass (unison exit 3, empty failure list) deleted the
+  temp for a path that is still failing. Absence from a truncated list is not
+  evidence that a path settled, and that temp is the resume point."
+[ "$(failed_paths docs)" = "$_before" ] \
+  || fail "an interrupted pass overwrote the failure record with its own
+  truncated list; got: $(failed_paths docs)"
+
+pass "unison's failed paths parsed, gated, dated, reported and settled"
