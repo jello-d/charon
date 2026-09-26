@@ -92,12 +92,58 @@ CRUMB_GLOB='.unison.*.unison.tmp'
 # for the same reason traits are: this is a record of what a real run observed,
 # and a cleared cache must not silently erase the only evidence of a fault.
 FAILED_DIR="$CHARON_STATE/failed"
-# How old a temp must be before `sweep` will delete it. See the sweep section
-# for why an age gate is the safety property: a RECENT temp may be the live
-# resume point of an interrupted transfer, and on a shared remote it may be
-# another box's. Here with the constants rather than beside its functions
-# because usage() prints it and is defined long before them.
-CHARON_CRUMB_AGE_MIN=${CHARON_CRUMB_AGE_MIN:-1440}   # 1 day
+# GLOBAL settings: the handful of facts that belong to the INSTALL rather than
+# to any one source or profile. Sources and profiles each answer "which tree",
+# and neither is the right home for "do I want the daily sweep at all".
+#
+# WHY A CONFIG FILE AND NOT AN INSTALL-TIME ENV SEAM. CHARON_NOTIFY is
+# deliberately the latter: it is integrator policy, it is baked into the units,
+# and check audits the BAKED value by reading it back out of the artifact. That
+# trick CANNOT work for SWEEP, because when the sweep is off there IS NO UNIT --
+# so "no timer" would be ambiguous between "off on purpose" and "never
+# installed", and check could not assert either. A declaration that check can
+# read in BOTH states has to live outside the artifacts it governs.
+CHARON_CONFIG_FILE=${CHARON_CONFIG_FILE:-$CHARON_CONFIG/charon.conf}
+
+# Read one KEY from the global config, literally (nothing executed), or nothing.
+config_get() {   # <KEY>
+  [ -f "$CHARON_CONFIG_FILE" ] || return 0
+  sed -n "s/^$1=//p" "$CHARON_CONFIG_FILE" | head -1
+}
+
+# daily (the default) or off. An unrecognised value WARNS and behaves as daily:
+# leaving litter on someone's remote is the worse failure, and a typo should not
+# quietly turn a safety feature off.
+sweep_mode() {
+  _sm=${CHARON_SWEEP:-$(config_get SWEEP)}
+  case ${_sm:-daily} in
+    daily) printf 'daily' ;;
+    off)   printf 'off' ;;
+    *)     log_warn "SWEEP='$_sm' is not 'daily' or 'off'; treating as daily"
+           printf 'daily' ;;
+  esac
+}
+
+# How old a temp must be before `sweep` will delete it. Env wins, then the
+# global config, then the built-in day. See the sweep section for why an age
+# gate is the safety property at all.
+#
+# A NON-NUMERIC VALUE REFUSES rather than coerces, and that is not pedantry:
+# every "safe looking" coercion here is catastrophic, because a value that lands
+# as 0 makes `find -mmin +0` match EVERYTHING, including the fresh temps that
+# are live resume points. A typo must stop the sweep, never widen it.
+crumb_age_min() {
+  _cam=${CHARON_CRUMB_AGE_MIN:-$(config_get CRUMB_AGE_MIN)}
+  _cam=${_cam:-1440}
+  case $_cam in
+    *[!0-9]*|'')
+      log_error "CRUMB_AGE_MIN='$_cam' is not a whole number of minutes;"\
+                "refusing to sweep, because a bad age gate deletes live"\
+                "resume points rather than litter"
+      return 1 ;;
+  esac
+  printf '%s' "$_cam"
+}
 
 # A SKIPPED pass is neither a success nor a fault, and conflating it with
 # success cost real time: a detached archive rebuild reported `documents EXIT=0`
@@ -147,9 +193,10 @@ modes:
   run [profile] sync one profile by name, or all (default)
   seed          bulk-seed the priority subtrees from their sources
   seed-full     bulk-seed the full configured tree into the cache (fast)
-  sweep [prof]  delete Unison transfer temps orphaned on either replica
-                (older than CHARON_CRUMB_AGE_MIN=${CHARON_CRUMB_AGE_MIN}
-                minutes; a recent one may be a live resume point)
+  sweep [prof]  BACKSTOP sweep of Unison transfer temps orphaned on either
+                replica (each pass already cleans up after paths it saw
+                settle). Only temps older than CRUMB_AGE_MIN minutes, since a
+                recent one may be a live resume point.
   install       install Unison profiles, systemd units/timers, and seed
   uninstall     remove those units/timers/profiles (NOT the cache or config)
   status        what is true now: sources, profiles, last runs, next runs
@@ -1031,6 +1078,33 @@ write_profile_artifacts() {   # <profile>
   printf '%s\n' "$_dd" >"$_dp"
 }
 
+# Write (or REMOVE) the daily sweep pair, according to SWEEP.
+#
+# A MODE SWITCH REMOVES THE OTHER STATE. Turning the sweep off has to delete the
+# timer and the unit, not merely stop enabling them: a leftover enabled timer
+# would keep deleting from the user's remote after they asked it not to, which
+# is the worst way to honour a setting. Both directions are idempotent, so
+# running install twice in either mode changes nothing the second time.
+setup_sweep_units() {
+  if [ "$(sweep_mode)" = off ]; then
+    if [ -f "$SYSTEMD_USER_DIR/charon-sweep.timer" ] \
+       || [ -f "$SYSTEMD_USER_DIR/charon-sweep.service" ]; then
+      log_info "SWEEP=off: removing the daily sweep timer"
+    fi
+    if have_systemd; then
+      systemctl --user disable --now charon-sweep.timer >/dev/null 2>&1 || :
+    fi
+    rm -f "$SYSTEMD_USER_DIR/charon-sweep.timer" \
+          "$SYSTEMD_USER_DIR/charon-sweep.service"
+    log_info "SWEEP=off: nothing will collect orphaned Unison temps"\
+             "automatically; run '${APP_NAME%% *} sweep' when you want to"
+    return 0
+  fi
+  render_sweep_unit  >"$SYSTEMD_USER_DIR/charon-sweep.service"
+  render_sweep_timer >"$SYSTEMD_USER_DIR/charon-sweep.timer"
+  return 0
+}
+
 setup_systemd_units() {
   log_info "setting up systemd user units in $SYSTEMD_USER_DIR"
   mkdir -p "$SYSTEMD_USER_DIR"
@@ -1038,8 +1112,7 @@ setup_systemd_units() {
   # timed --user runs (no shell env) use the config this install resolved.
   render_sync_unit "$(resolved_notify)" \
     >"$SYSTEMD_USER_DIR/charon-sync@.service"
-  render_sweep_unit  >"$SYSTEMD_USER_DIR/charon-sweep.service"
-  render_sweep_timer >"$SYSTEMD_USER_DIR/charon-sweep.timer"
+  setup_sweep_units
   for p in $(profile_names); do
     write_profile_artifacts "$p"
   done
@@ -1054,10 +1127,21 @@ setup_systemd_units() {
   log_trace "reloading systemd user daemon"
   systemctl --user daemon-reload
   log_trace "enabling timers"
+  # SAY SO WHEN enable FAILS. These used to be bare `>/dev/null 2>&1` with the
+  # status discarded, so install reported success having scheduled nothing and
+  # only a later `check` could notice -- the same silent-success-on-an-error
+  # path this project already fixed once for the absent-scheduler case.
   for p in $(profile_names); do
-    systemctl --user enable --now "charon-sync-$p.timer" >/dev/null 2>&1
+    systemctl --user enable --now "charon-sync-$p.timer" >/dev/null 2>&1 \
+      || log_warn "could not enable charon-sync-$p.timer; '$p' will NOT sync"\
+                  "on a schedule (check will say so)"
   done
-  systemctl --user enable --now charon-sweep.timer >/dev/null 2>&1
+  if [ "$(sweep_mode)" = off ]; then
+    return 0
+  fi
+  systemctl --user enable --now charon-sweep.timer >/dev/null 2>&1 \
+    || log_warn "could not enable charon-sweep.timer; orphaned Unison temps"\
+                "will not be collected automatically (check will say so)"
 }
 
 # Fast, resumable initial population of specific subtrees straight from the
@@ -1160,8 +1244,8 @@ seed_full() {
 # the live resume point of an interrupted transfer. Deleting one is never
 # destructive (it costs a re-transfer, and it is by definition not content),
 # but there is no reason to pay that cost, and on a SHARED remote the
-# outstanding transfer may be another box's. The gate is CHARON_CRUMB_AGE_MIN,
-# defined with the constants at the top of this file.
+# outstanding transfer may be another box's. The gate is crumb_age_min(), whose
+# value the user owns (CRUMB_AGE_MIN in charon.conf, or the env).
 
 # --- the surgical half: clean up the instant a path is known to have settled --
 # The blind sweep below can only ask "is this old enough to be safe?", because
@@ -1244,10 +1328,13 @@ sweep_settled() {   # <profile> <settled paths, newline separated>
 # `while IFS= read -r` from a redirect, never `for x in $(...)` and never
 # through a pipe: these are FILENAMES (this Drive is full of spaces) and a
 # pipe would put the reader's counters in a subshell where they cannot survive.
-crumbs_in() {   # <root>
+# The age is a PARAMETER, not read from ambient state here: a function that
+# reaches for the environment cannot be tested across its own boundary, and this
+# one's boundary is the difference between deleting litter and deleting a live
+# resume point.
+crumbs_in() {   # <root> <age-minutes>
   [ -d "$1" ] || return 0
-  find "$1" -type f -name "$CRUMB_GLOB" -mmin "+$CHARON_CRUMB_AGE_MIN" \
-    2>/dev/null
+  find "$1" -type f -name "$CRUMB_GLOB" -mmin "+$2" 2>/dev/null
 }
 
 # Both roots of every profile named, or of all of them. Scoped to the
@@ -1263,9 +1350,10 @@ crumb_roots() {   # [profile]
 
 # count and total bytes of the orphaned crumbs, as "<count> <bytes>".
 crumb_tally() {   # [profile]
+  _cta=$(crumb_age_min) || return 1
   _ctl=$(mktemp) || return 1
   crumb_roots "${1:-}" | while IFS= read -r _ctr; do
-    crumbs_in "$_ctr"
+    crumbs_in "$_ctr" "$_cta"
   done >"$_ctl"
   _ctn=0; _ctb=0
   while IFS= read -r _ctf; do
@@ -1284,6 +1372,9 @@ do_sweep() {   # [profile]
   if [ -n "$_swp" ] && [ ! -f "$PROFILES_DIR/$_swp.conf" ]; then
     log_error "unknown profile '$_swp'"; return 1
   fi
+  # Resolve the age BEFORE taking the lock, so a bad value refuses without
+  # holding up a pass that is waiting behind it.
+  _swa=$(crumb_age_min) || return 2
   mkdir -p "$LOCKDIR"
   exec 9>"$LOCKFILE"
   if ! flock -n 9 2>/dev/null; then
@@ -1294,7 +1385,7 @@ do_sweep() {   # [profile]
   fi
   _swl=$(mktemp) || return 1
   crumb_roots "$_swp" | while IFS= read -r _swr; do
-    crumbs_in "$_swr"
+    crumbs_in "$_swr" "$_swa"
   done >"$_swl"
   _swn=0; _swb=0; _swf=0
   while IFS= read -r _swc; do
@@ -1313,8 +1404,7 @@ do_sweep() {   # [profile]
   rm -f "$_swl"
   flock -u 9 2>/dev/null; exec 9>&-
   if [ "$_swn" -eq 0 ] && [ "$_swf" -eq 0 ]; then
-    log_info "sweep: no orphaned unison temps older than"\
-             "${CHARON_CRUMB_AGE_MIN}m"
+    log_info "sweep: no orphaned unison temps older than ${_swa}m"
   else
     log_info "sweep: removed $_swn orphaned unison temp(s), $_swb bytes"
   fi
@@ -1645,6 +1735,30 @@ check_service_template() {
 # here three times (the prf, then the mount unit, then the sync unit).
 check_sweep_units() {
   _csr=0
+  # SWEEP=off IS A VALID STATE AND MUST CHECK CLEAN. Reporting a user's
+  # deliberate choice as drift is worse than a nag: an integrator turns a
+  # non-zero check into drift and runs apply, apply re-enables the timer, and
+  # the choice is silently reverted on every provision sweep -- a fight the user
+  # cannot win. So the declaration is asserted in BOTH directions, and what
+  # would be drift here is the artifacts SURVIVING the switch to off.
+  if [ "$(sweep_mode)" = off ]; then
+    for _cso in charon-sweep.timer charon-sweep.service; do
+      if [ -e "$SYSTEMD_USER_DIR/$_cso" ]; then
+        echo "  [FAIL] SWEEP=off but $_cso is still installed; it would keep"\
+             "deleting from the remote (run '${APP_NAME} install')"
+        _csr=1
+      fi
+    done
+    if have_systemd \
+       && systemctl --user is-enabled charon-sweep.timer >/dev/null 2>&1; then
+      echo "  [FAIL] SWEEP=off but charon-sweep.timer is still ENABLED"
+      _csr=1
+    fi
+    [ "$_csr" -ne 0 ] \
+      || echo "  [OK]   sweep disabled by config (SWEEP=off); no timer, and"\
+              "'${APP_NAME%% *} sweep' still works by hand"
+    return $_csr
+  fi
   _crt=${TMPDIR:-/tmp}/charon-sweep-render.$$
   render_sweep_unit >"$_crt"
   check_generated "charon-sweep.service" \
@@ -1804,13 +1918,19 @@ check_profile_health() {   # <profile>
 # of an honest answer: the crumbs that matter are the ones on the remote, and a
 # cache-only scan would have reported zero all through the incident.
 check_crumbs() {
+  # An age charon REFUSES to act on is drift a human must fix, not litter to
+  # shrug at: with a bad CRUMB_AGE_MIN nothing is ever swept, silently.
+  _cca=$(crumb_age_min) || {
+    echo "  [FAIL] CRUMB_AGE_MIN is not a whole number of minutes; nothing"\
+         "will ever be swept (fix $CHARON_CONFIG_FILE)"
+    return 1; }
   # crumb_tally returns "<count> <bytes>" on one line; splitting it into two
   # integers is the intent, not an oversight.
   # shellcheck disable=SC2046
   set -- $(crumb_tally)
   [ "${1:-0}" -gt 0 ] || return 0
   echo "  [WARN] $1 orphaned unison temp(s) on the configured trees"\
-       "(${2:-0} bytes), all older than ${CHARON_CRUMB_AGE_MIN}m:"\
+       "(${2:-0} bytes), all older than ${_cca}m:"\
        "run '${APP_NAME%% *} sweep'"
   return 0
 }
@@ -1889,7 +2009,9 @@ do_check() {
     check_profile_health "$p" || _rc=1
   done
   [ -n "$_any" ] || echo "  [WARN] no profiles configured ($PROFILES_DIR)"
-  check_crumbs
+  # Litter itself is NOT drift (see check_crumbs), but a CRUMB_AGE_MIN charon
+  # refuses to act on is: nothing would ever be swept, and silently.
+  check_crumbs || _rc=1
   check_notify_seam || _rc=1
   return $_rc
 }

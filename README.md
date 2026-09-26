@@ -46,7 +46,19 @@ often too old for current OAuth flows.
 
 ## Configuration (data, not baked in)
 
-Two kinds of file, both KEY=VALUE and read literally.
+Three kinds of file, all KEY=VALUE and read literally.
+
+The **global** file (`charon.conf`) is optional and holds only what belongs to
+the install rather than to any one tree:
+
+    SWEEP=daily                # or `off`: install arms no daily sweep timer
+    CRUMB_AGE_MIN=1440         # minutes before an orphaned Unison temp goes
+
+With `SWEEP=off` nothing is collected automatically, `charon sweep` still works
+by hand, and `check` reports that state as correct rather than as drift: a
+deliberate choice is not something charon will argue with. The age gate is a
+safety property rather than tidiness, since a recent temp may be the live resume
+point of an interrupted transfer.
 
 A **source** (`sources.d/<name>.conf`) is one tree to cache, and how it exists:
 
@@ -101,9 +113,11 @@ There is deliberately **no working-link key**: charon manages a cache, and
 where a desktop surfaces that cache is layout an integrator owns.
 
 `charon sync install` generates a Unison profile + a systemd timer per profile,
-seeds the priority subtrees synchronously, then bulk-seeds the full tree in the
-background. Ships `share/charon/example.conf` and `example-source.conf`;
-`setup.sh bootstrap` copies the former into an empty `profiles.d`.
+arms a daily sweep timer for orphaned Unison temps, seeds the priority subtrees
+synchronously, then bulk-seeds the full tree in the background. Installing the
+*package* schedules nothing; only `install` does. Ships
+`share/charon/example.conf`, `example-source.conf` and `example-charon.conf`;
+`setup.sh bootstrap` copies the first into an empty `profiles.d`.
 
 ## Configuration seams
 

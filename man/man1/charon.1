@@ -41,7 +41,7 @@ daily to catch what no pass could know about (a crash before the record was
 written, litter from an older version, or another machine's residue). These are
 never content, so removing one costs at most a re-transfer. Only temps older
 than
-.B CHARON_CRUMB_AGE_MIN
+.B CRUMB_AGE_MIN
 minutes (default 1440, one day) are removed, because a recent one may be the
 live resume point of an interrupted transfer, and on a shared remote it may
 belong to another machine. Runs under the sync lock and does nothing while a
@@ -50,7 +50,14 @@ pass is in flight. See
 for why they cannot simply be kept off the remote.
 .TP
 .B charon install " " | " " uninstall
-Provision the units, profiles and timers, or remove them.
+Provision the units, profiles and timers, or remove them. This is also what
+arms the
+.B daily sweep timer
+described under ORPHANED TRANSFER TEMPS; set
+.B SWEEP=off
+if you would rather collect litter by hand. Installing the
+.I package
+schedules nothing on its own: only this verb does.
 .B uninstall
 never touches the cache or your configuration.
 .TP
@@ -82,7 +89,35 @@ Keep the local cache
 in step with the mount using Unison; the mount is canonical. Sync is driven by
 per-subtree PROFILES \(em nothing is baked in.
 .SH CONFIGURATION
-Configuration is data, in two kinds, both KEY=VALUE and read literally.
+Configuration is data, in three kinds, all KEY=VALUE and read literally.
+.SS Global
+.I ~/.config/charon/charon.conf
+holds the few settings that belong to the install rather than to any one source
+or profile. It is optional; the defaults are what charon does with no file at
+all.
+.TP
+.B SWEEP=daily " " | " " off
+whether
+.B charon install
+arms the daily sweep of orphaned Unison transfer temps. Default
+.BR daily .
+With
+.B off
+no timer is installed, nothing is collected automatically,
+.B charon sweep
+still works by hand, and
+.B charon check
+reports that state as correct rather than as drift. An unrecognised value warns
+and behaves as
+.BR daily ,
+because leaving litter on a remote is the worse failure.
+.TP
+.B CRUMB_AGE_MIN=1440
+how old, in minutes, an orphaned temp must be before the sweep will remove it.
+A recent one may be the live resume point of an interrupted transfer. Read at
+run time, so the timed sweep honours it too. A value that is not a whole number
+of minutes is REFUSED rather than coerced: anything landing on zero would match
+every temp, including the ones still in use.
 .SS Sources
 A
 .I ~/.config/charon/sources.d/<name>.conf
@@ -149,7 +184,8 @@ by hand \(em restoring the file, or deleting it on both sides. It does NOT
 silently restore the missing copy.
 .PP
 charon ships
-.IR share/charon/example.conf " and " share/charon/example-source.conf ;
+.IR share/charon/example.conf ", " share/charon/example-source.conf " and"
+.IR share/charon/example-charon.conf ;
 .B "setup.sh bootstrap"
 copies the former into an empty profiles.d to get you started.
 .SH ENVIRONMENT
@@ -174,13 +210,16 @@ an optional command
 .RB ( "flag <id> <msg>" " / " "clear <id>" " / " list )
 charon calls on sync faults; empty = no notify.
 .TP
-.B CHARON_CRUMB_AGE_MIN
-how old, in minutes, an orphaned Unison transfer temp must be before
-.B charon sweep
-will remove it, and before
-.B charon check
-will report it (default 1440, one day). See
-.BR "ORPHANED TRANSFER TEMPS" .
+.B CHARON_SWEEP ", " CHARON_CRUMB_AGE_MIN
+one-off overrides of the
+.B SWEEP
+and
+.B CRUMB_AGE_MIN
+settings in
+.IR charon.conf ,
+which is where they normally belong: the environment is not visible to a timed
+.BR "systemd --user" " run, so a value exported in a shell governs only sweeps"
+you invoke yourself. See CONFIGURATION.
 .SH TRAITS
 Whether a backend folds case, carries mtimes, has Unix permissions or symlinks
 is a fact about the backend, not a preference, and a wrong answer is expensive:
@@ -265,6 +304,9 @@ a fault. The reason is always logged, and additionally sent to
 .B CHARON_NOTIFY
 when one is configured.
 .SH FILES
+.TP
+.I ~/.config/charon/charon.conf
+optional global settings (SWEEP, CRUMB_AGE_MIN).
 .TP
 .I ~/.config/charon/sources.d/*.conf
 the sources: what to cache, and how it comes to exist.
