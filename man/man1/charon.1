@@ -19,10 +19,14 @@ rather than pull or push.
 .TP
 .B charon check " " [profile]
 Audit and report drift, including whether each generated Unison profile still
-matches what this version would write. Non-zero on drift.
+matches what this version would write. Non-zero on drift. Also names the
+individual paths a profile is failing to propagate, and does so even when the
+unit itself succeeded: Unison exits non-zero only for a transfer failure, so a
+profile can be green overall with a path quietly stuck.
 .TP
 .B charon status
-Sources, profiles, and the artifacts they generate.
+Sources, profiles, and the artifacts they generate, plus any paths a profile is
+currently failing on and how long that has been true.
 .TP
 .B charon seed " " [--priority]
 Bulk-populate the cache straight from the source, which is far faster than a
@@ -258,6 +262,12 @@ the profiles: what to reconcile, and with what policy.
 .TP
 .I ~/.local/state/charon/traits/*
 the MEASURED backend traits each profile is derived from.
+.TP
+.I ~/.local/state/charon/failed/<profile>
+the paths the last completed pass could not propagate, with when that set was
+first seen. Written only from a run that reached its own verdict, so an
+interrupted pass leaves the previous record standing rather than replacing it
+with a partial one. Its absence means the profile is clean.
 .TP
 .I ~/.unison/charon-<name>.prf
 the generated Unison profiles.

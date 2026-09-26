@@ -88,6 +88,10 @@ LOCKFILE="$LOCKDIR/charon-sync.lock"
 # Substituted into prf:charon as @CRUMB_GLOB@, so the rendered line is
 # byte-identical to the one it replaced (pinned by test/sweep.t).
 CRUMB_GLOB='.unison.*.unison.tmp'
+# Which paths a profile is currently failing on, per profile. STATE, not cache,
+# for the same reason traits are: this is a record of what a real run observed,
+# and a cleared cache must not silently erase the only evidence of a fault.
+FAILED_DIR="$CHARON_STATE/failed"
 # How old a temp must be before `sweep` will delete it. See the sweep section
 # for why an age gate is the safety property: a RECENT temp may be the live
 # resume point of an interrupted transfer, and on a shared remote it may be
@@ -274,6 +278,112 @@ extract_section() {
     $0=="__SECTION_END__ "   name {flag=0}
     flag {print}
   ' "$_self"
+}
+
+#### what unison said, as data ####
+# charon has always reported unison's EXIT CODE and never looked at a word of
+# its output, so a fault said "exit 2, go read the log" and a human had to dig
+# the actual paths out of the journal by hand. That is precisely what 2026-09-24
+# cost: six paths, named plainly in the journal, found only by grepping it.
+#
+# THIS IS charon's ONLY DEPENDENCE ON UNISON'S OUTPUT FORMAT, and it is kept to
+# one parser on purpose. The project's line is that unison stays replaceable, so
+# a wording change must break ONE function, not a feature. A parse that finds
+# nothing is NOT an error anywhere: everything built on it degrades to what
+# charon did before.
+
+# The failed paths from a captured run, one per line, deduplicated.
+#
+# Unison's wording under the flags charon uses (-batch -auto -ui text -silent)
+# is exactly one line per failed path:
+#     Failed [<relative path>]: <reason>
+# The path is BRACKETED, which is the only reason a name containing spaces can
+# be recovered at all -- and every name that has ever caused trouble here has
+# had spaces in it. Measured 2026-09-26, unison 2.53.8. The capture is greedy so
+# that a path containing ']' survives; no unison reason contains ']: '.
+parse_unison_failures() {   # <captured-output-file>
+  [ -f "$1" ] || return 0
+  sed -n 's/^Failed \[\(.*\)\]: .*$/\1/p' "$1" | sort -u
+}
+
+# Did unison reach its OWN verdict, so that its failure list is COMPLETE?
+#
+# THE LOAD-BEARING GUARD. Unison documents four statuses: 0 up to date, 1 some
+# files skipped but transfers fine, 2 non-fatal transfer failures, 3 fatal error
+# OR EXECUTION INTERRUPTED. Only 0-2 mean it finished reconciling and reported
+# everything it found. A 3, or charon's own `timeout` kill (124/137), leaves a
+# TRUNCATED list -- and a truncated list read as "these paths are fine now" is
+# the one way the machinery built on this parse could destroy something, because
+# a temp still needed for a resume would look settled.
+unison_rc_reported() {   # <rc>
+  case "$1" in 0|1|2) return 0 ;; *) return 1 ;; esac
+}
+
+failed_file() { printf '%s/%s' "$FAILED_DIR" "$1"; }
+
+failed_get() {   # <profile> <KEY>
+  _fgf=$(failed_file "$1")
+  [ -f "$_fgf" ] || return 0
+  sed -n "s/^$2=//p" "$_fgf" | head -1
+}
+
+# The paths a profile is currently failing on, one per line.
+failed_paths() {   # <profile>
+  _fpf=$(failed_file "$1")
+  [ -f "$_fpf" ] || return 0
+  sed -n 's/^FAILED=//p' "$_fpf"
+}
+
+# Record what a pass observed. Does NOTHING unless the list can be trusted, so
+# an interrupted or timed-out pass leaves the previous record standing rather
+# than replacing it with a partial one.
+record_failures() {   # <profile> <unison-rc> <captured-output>
+  if ! unison_rc_reported "$2"; then
+    log_trace "not recording failed paths for '$1': unison exited $2 without"\
+              "reporting, so its list would be incomplete"
+    return 0
+  fi
+  _rfn=$(parse_unison_failures "$3")
+  _rff=$(failed_file "$1")
+  if [ -z "$_rfn" ]; then
+    # Nothing failing: drop the record entirely, so its ABSENCE is the signal
+    # that this profile is clean.
+    rm -f "$_rff" 2>/dev/null
+    return 0
+  fi
+  mkdir -p "$FAILED_DIR" 2>/dev/null || return 0
+  _rfnow=$(date +%s)
+  # SINCE survives only while the SET is unchanged. A different set of paths is
+  # a NEW fault, not a continuation of the old one, and reporting it as "failing
+  # since" the older timestamp would overstate how long this has been true.
+  _rfs=$_rfnow
+  if [ "$(failed_paths "$1")" = "$_rfn" ]; then
+    _rfp=$(failed_get "$1" SINCE)
+    case $_rfp in ''|*[!0-9]*) : ;; *) _rfs=$_rfp ;; esac
+  fi
+  { printf 'SINCE=%s\n' "$_rfs"
+    printf 'LAST=%s\n' "$_rfnow"
+    printf 'RC=%s\n' "$2"
+    printf '%s\n' "$_rfn" | sed 's/^/FAILED=/'
+  } >"$_rff" 2>/dev/null || log_warn "could not record failed paths for '$1'"
+  return 0
+}
+
+# One line naming the count and the oldest evidence, or nothing. Shared by the
+# fault message, check and status so the three cannot describe the same state
+# three different ways.
+failed_summary() {   # <profile> [now-epoch]
+  _fsp=$(failed_paths "$1")
+  [ -n "$_fsp" ] || return 0
+  _fsc=$(printf '%s\n' "$_fsp" | wc -l | tr -d ' ')
+  _fss=$(failed_get "$1" SINCE)
+  _fsn=${2:-$(date +%s)}
+  if [ -n "$_fss" ]; then
+    printf '%s path(s) failing, first seen %s ago' "$_fsc" \
+      "$(human_age "$_fss" "$_fsn")"
+  else
+    printf '%s path(s) failing' "$_fsc"
+  fi
 }
 
 #### state, as data ####
@@ -1179,8 +1289,34 @@ gate_profile() {   # <profile> <service-name>
 # partial transfer temp in the destination (see the ignore in prf:charon for
 # what that cost). The inhibitor protects suspend; the timeout only has to
 # bound a genuinely WEDGED run, so it sits far above any healthy pass.
-run_unison_guarded() {   # <unison-profile>
+# Run a command with its combined output BOTH streamed and captured to <file>,
+# returning the COMMAND's status rather than tee's. An empty <file> skips the
+# capture entirely and runs the command untouched.
+#
+# STREAMED, NOT BUFFERED: the journal must keep seeing unison's warnings and
+# failures as they happen, not in one lump when a pass that may run for an hour
+# finally ends. So this is a pipeline, and `$?` after a pipeline is tee's --
+# PIPESTATUS is not POSIX -- which is why the status is smuggled out through a
+# file written INSIDE the pipeline. If the shell is killed before that write,
+# the file stays absent and this returns 125, which no unison status can be, so
+# a caller cannot mistake "no verdict recorded" for a real one.
+run_teed() {   # <file|""> <cmd...>
+  _tf=$1; shift
+  [ -n "$_tf" ] || { "$@"; return $?; }
+  _trc=$_tf.rc
+  rm -f "$_trc"
+  { "$@" 2>&1; echo $? >"$_trc"; } | tee -- "$_tf"
+  _trv=$(cat "$_trc" 2>/dev/null)
+  rm -f "$_trc"
+  case $_trv in
+    ''|*[!0-9]*) return 125 ;;
+    *) return "$_trv" ;;
+  esac
+}
+
+run_unison_guarded() {   # <unison-profile> [capture-file]
   _up=$1
+  _ucap=${2:-}
   # Tell unison WHERE the profile is. charon has always had UNISON_DIR for
   # where it WRITES profiles, but never passed it on, so the two agreed only
   # because both default to ~/.unison. Override UNISON_DIR and charon would
@@ -1191,13 +1327,14 @@ run_unison_guarded() {   # <unison-profile>
   set -- timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-3600}" \
     unison "$_up" -auto -batch -ui text -silent
   if $_inh --why="charon-sync probe" true 2>/dev/null; then
-    $_inh --why="unison $_up syncing (unfreezable on FUSE)" "$@"
+    run_teed "$_ucap" $_inh \
+      --why="unison $_up syncing (unfreezable on FUSE)" "$@"
     return $?
   fi
   log_warn "cannot hold the sleep inhibitor (polkit denied, or"\
            "systemd-inhibit absent); syncing UNPROTECTED -- a suspend"\
            "mid-pass may wedge on the FUSE mount"
-  "$@"
+  run_teed "$_ucap" "$@"
 }
 
 run_sync_profile() {
@@ -1209,12 +1346,30 @@ run_sync_profile() {
   [ "$_g" -eq 0 ] || return "$_g"
 
   log_info "running Unison profile (non-interactive): $UNISON_PROFILE"
-  run_unison_guarded "$UNISON_PROFILE"; RET=$?
+  # Capture unison's output so the failed PATHS can be recorded. A capture that
+  # cannot be created is not a reason to skip the pass: syncing matters, knowing
+  # which paths failed is a bonus, so this degrades to the old behaviour.
+  CAPTURE=$(mktemp "${TMPDIR:-/tmp}/charon-uni-$PROFILE.XXXXXX" 2>/dev/null) \
+    || CAPTURE=
+  run_unison_guarded "$UNISON_PROFILE" "$CAPTURE"; RET=$?
+  if [ -n "$CAPTURE" ]; then
+    record_failures "$PROFILE" "$RET" "$CAPTURE"
+    rm -f "$CAPTURE"
+  fi
 
   if [ $RET -eq 0 ]; then
     notify clear "$SERVICE_NAME"; return 0
   fi
-  MSG="Unison $UNISON_PROFILE failed (exit $RET). Run it interactively and"
+  MSG="Unison $UNISON_PROFILE failed (exit $RET)."
+  # NAME THE PATHS IN THE FLAG ITSELF. The flag is often the only thing a human
+  # ever reads about a fault, and "exit 2, go read the log" made them go and
+  # read the log -- which on 2026-09-24 meant grepping the journal by hand for
+  # six paths unison had already printed plainly.
+  _rsf=$(failed_summary "$PROFILE")
+  if [ -n "$_rsf" ]; then
+    MSG="$MSG $_rsf, e.g. $(failed_paths "$PROFILE" | head -1)."
+  fi
+  MSG="$MSG Run it interactively and"
   MSG="$MSG check ~/.unison/unison.log."
   # ALWAYS log, THEN also notify. The old form logged only when NO notifier was
   # configured, which made a set-but-missing notifier swallow the fault whole:
@@ -1304,6 +1459,14 @@ do_status() {
         *)     printf '    last run: FAILED (%s), %s\n' \
                  "$_det" "$(human_age "$_ep" "$_now")" ;;
       esac
+      _fsum=$(failed_summary "$_p" "$_now")
+      if [ -n "$_fsum" ]; then
+        printf '    failing:  %s\n' "$_fsum"
+        failed_paths "$_p" | head -3 | sed 's/^/                /'
+        _fn=$(failed_paths "$_p" | wc -l | tr -d ' ')
+        [ "$_fn" -gt 3 ] && printf '                ... and %s more\n' \
+          "$((_fn - 3))"
+      fi
       _cf=$(profile_get "$_p" CONFLICT); _dl=$(profile_get "$_p" DELETE)
       _ig=$(profile_get_all "$_p" IGNORE | tr '\n' ' ')
       printf '    policy:   conflict=%s delete=%s%s\n' \
@@ -1434,8 +1597,29 @@ check_profile_outcome() {   # <profile>
     skip)  echo "  [WARN] $_u last run: SKIPPED, $(printf '%s' "$_oc" |
                   cut -d'|' -f3)" ;;
     *)     echo "  [FAIL] $_u last run: $(printf '%s' "$_oc" | cut -d'|' -f3)"
+           report_failed_paths "$1"
            return 1 ;;
   esac
+  # A profile can be SUCCEEDING overall and still have paths unison could not
+  # propagate, because unison exits 2 only for a transfer failure. Say so: a
+  # [OK] line above a quietly stuck path is the "presence is not function" trap
+  # in a new place.
+  report_failed_paths "$1"
+  return 0
+}
+
+# The paths under a verdict line, indented, truncated, and ending in an
+# explicit `return 0` so a false trailing test cannot become this function's
+# status (that exact shape once aborted an apply under set -e).
+report_failed_paths() {   # <profile>
+  _rpp=$(failed_paths "$1")
+  [ -n "$_rpp" ] || return 0
+  echo "         $(failed_summary "$1"):"
+  printf '%s\n' "$_rpp" | head -5 | sed 's/^/           /'
+  _rpc=$(printf '%s\n' "$_rpp" | wc -l | tr -d ' ')
+  if [ "$_rpc" -gt 5 ]; then
+    echo "           ... and $((_rpc - 5)) more"
+  fi
   return 0
 }
 
