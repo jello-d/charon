@@ -1055,7 +1055,16 @@ resolved_notify() {
   esac
   _np=$(command -v "$CHARON_NOTIFY" 2>/dev/null || true)
   if [ -n "$_np" ]; then
-    log_info "notify seam resolved to $_np"; printf '%s' "$_np"
+    # >&2 IS LOAD-BEARING. This function's STDOUT is its return value, read by
+    # `$(resolved_notify)`, so anything it prints there becomes part of the
+    # value. log_info writes to stdout, so at LOG_LEVEL>=3 the baked notify path
+    # became "[INFO ] ...\n/home/jello/bin/...", which is MULTI-LINE -- and a
+    # multi-line sed replacement is a sed ERROR, so render_sync_unit produced
+    # nothing and install, which redirects straight to the unit file, left
+    # charon-sync@.service EMPTY. Measured on a live box 2026-09-26 by running
+    # install at LOG_LEVEL=3. GENERAL RULE: a function whose stdout is a value
+    # must never log to stdout.
+    log_info "notify seam resolved to $_np" >&2; printf '%s' "$_np"
   else
     log_warn "CHARON_NOTIFY='$CHARON_NOTIFY' is not on PATH at install time;"\
              "baking as-is, but a --user unit will NOT resolve it"
@@ -1069,7 +1078,8 @@ resolved_notify() {
 # profile that moved to PROVIDER=none would keep waiting on a mount it no
 # longer uses.
 write_profile_artifacts() {   # <profile>
-  render_timer "$1" >"$SYSTEMD_USER_DIR/charon-sync-$1.timer"
+  install_artifact "$SYSTEMD_USER_DIR/charon-sync-$1.timer" \
+    render_timer "$1" || return 1
   _dp=$(sync_dropin_file "$1")
   rm -rf "${_dp%/*}"
   _dd=$(render_sync_dropin "$1")
@@ -1085,6 +1095,38 @@ write_profile_artifacts() {   # <profile>
 # would keep deleting from the user's remote after they asked it not to, which
 # is the worst way to honour a setting. Both directions are idempotent, so
 # running install twice in either mode changes nothing the second time.
+# Write a generated artifact by RENDERING TO A TEMP FIRST, replacing the live
+# file only if the render succeeded and produced something.
+#
+# `renderer > "$live"` truncates the live file BEFORE the renderer runs, so a
+# renderer that fails leaves an EMPTY artifact where a working one used to be.
+# That is not hypothetical: a stdout-polluted notify value made
+# render_sync_unit's sed fail, and install blanked charon-sync@.service on a
+# live box (2026-09-26). setup_unison_profiles already rendered via a temp for
+# exactly this reason -- "so a profile that cannot resolve does not leave a
+# truncated prf behind" -- and the UNIT writers never got the same treatment.
+# Stderr is deliberately NOT swallowed: the renderer's own reason is the only
+# clue to why it failed.
+install_artifact() {   # <live-path> <renderer> [args...]
+  _iap=$1; shift
+  _iat=$_iap.charon-new.$$
+  if ! "$@" >"$_iat"; then
+    rm -f "$_iat"
+    log_error "could not render $(basename "$_iap"); KEEPING the existing one"\
+              "rather than replacing it with a broken file"
+    return 1
+  fi
+  if [ ! -s "$_iat" ]; then
+    rm -f "$_iat"
+    log_error "rendered $(basename "$_iap") came out EMPTY; KEEPING the"\
+              "existing one"
+    return 1
+  fi
+  mv -f "$_iat" "$_iap" || {
+    rm -f "$_iat"; log_error "could not install $_iap"; return 1; }
+  return 0
+}
+
 setup_sweep_units() {
   if [ "$(sweep_mode)" = off ]; then
     if [ -f "$SYSTEMD_USER_DIR/charon-sweep.timer" ] \
@@ -1100,9 +1142,12 @@ setup_sweep_units() {
              "automatically; run '${APP_NAME%% *} sweep' when you want to"
     return 0
   fi
-  render_sweep_unit  >"$SYSTEMD_USER_DIR/charon-sweep.service"
-  render_sweep_timer >"$SYSTEMD_USER_DIR/charon-sweep.timer"
-  return 0
+  _sur=0
+  install_artifact "$SYSTEMD_USER_DIR/charon-sweep.service" \
+    render_sweep_unit || _sur=1
+  install_artifact "$SYSTEMD_USER_DIR/charon-sweep.timer" \
+    render_sweep_timer || _sur=1
+  return $_sur
 }
 
 setup_systemd_units() {
@@ -1110,11 +1155,12 @@ setup_systemd_units() {
   mkdir -p "$SYSTEMD_USER_DIR"
   # The service template carries the resolved remote + notify seam, so the
   # timed --user runs (no shell env) use the config this install resolved.
-  render_sync_unit "$(resolved_notify)" \
-    >"$SYSTEMD_USER_DIR/charon-sync@.service"
-  setup_sweep_units
+  _ssu=0
+  install_artifact "$SYSTEMD_USER_DIR/charon-sync@.service" \
+    render_sync_unit "$(resolved_notify)" || _ssu=1
+  setup_sweep_units || _ssu=1
   for p in $(profile_names); do
-    write_profile_artifacts "$p"
+    write_profile_artifacts "$p" || _ssu=1
   done
 
   if ! have_systemd; then
@@ -1122,7 +1168,7 @@ setup_systemd_units() {
              "SCHEDULED. charon will not sync on its own."
     log_warn "run '${APP_NAME%% *} sync' from your own scheduler (cron, a"\
              "supervisor, by hand), or install on a systemd --user session."
-    return 0
+    return $_ssu
   fi
   log_trace "reloading systemd user daemon"
   systemctl --user daemon-reload
@@ -1137,11 +1183,12 @@ setup_systemd_units() {
                   "on a schedule (check will say so)"
   done
   if [ "$(sweep_mode)" = off ]; then
-    return 0
+    return $_ssu
   fi
   systemctl --user enable --now charon-sweep.timer >/dev/null 2>&1 \
     || log_warn "could not enable charon-sweep.timer; orphaned Unison temps"\
                 "will not be collected automatically (check will say so)"
+  return $_ssu
 }
 
 # Fast, resumable initial population of specific subtrees straight from the
@@ -1685,7 +1732,14 @@ do_install() {
   ensure_source_traits
   ensure_cache_roots
   setup_unison_profiles
-  setup_systemd_units
+  # A unit that could not be RENDERED is not something to report success over:
+  # the existing one was deliberately kept, so the box is running the previous
+  # version's artifact and check will say so. Loud, and non-zero.
+  if ! setup_systemd_units; then
+    log_error "install: one or more generated artifacts could not be written;"\
+              "the previous ones were KEPT. Run '${APP_NAME%% *} check'."
+    return 1
+  fi
 
   # Seed the priority subtrees SYNCHRONOUSLY (a fresh box needs them now, e.g. a
   # desktop wallpaper), then bulk-seed the full configured tree in BACKGROUND
