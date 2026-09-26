@@ -116,6 +116,19 @@ and behaves as
 .BR daily ,
 because leaving litter on a remote is the worse failure.
 .TP
+.B UNWEDGE_AFTER=3
+after how many CONSECUTIVE identical failures charon tries to unwedge a profile
+itself; 0 disables it. A profile can fail the same propagation on every pass
+indefinitely, because the attempt never succeeds so Unison never commits the
+archive so the next pass repeats it. When the same set of paths has failed this
+many COMPLETED passes running, charon drops those paths' transfer temps so the
+next pass starts clean: a stranded temp is itself enough to cause this, a temp
+is never content, and one that has had this many chances has demonstrably not
+helped. An interrupted or timed-out pass does not count towards the streak, so a
+genuinely resuming large transfer never reaches the threshold. It acts once per
+fault and never touches the Unison archive, whose rebuild would cost far more
+than a re-transfer.
+.TP
 .B CRUMB_AGE_MIN=1440
 how old, in minutes, an orphaned temp must be before the sweep will remove it.
 A recent one may be the live resume point of an interrupted transfer. Read at

@@ -111,6 +111,21 @@ config_get() {   # <KEY>
   sed -n "s/^$1=//p" "$CHARON_CONFIG_FILE" | head -1
 }
 
+# After how many CONSECUTIVE identical failures charon tries to unwedge a
+# profile itself. 0 disables it. Default 3, which on a 30m profile is about 90
+# minutes before it intervenes: enough passes to be sure this is not a one-off,
+# far short of the four hours the 2026-09-24 incident actually ran for.
+unwedge_after() {
+  _ua=${CHARON_UNWEDGE_AFTER:-$(config_get UNWEDGE_AFTER)}
+  _ua=${_ua:-3}
+  case $_ua in
+    *[!0-9]*|'')
+      log_warn "UNWEDGE_AFTER='$_ua' is not a whole number; using 3"
+      printf '3' ;;
+    *) printf '%s' "$_ua" ;;
+  esac
+}
+
 # daily (the default) or off. An unrecognised value WARNS and behaves as daily:
 # leaving litter on someone's remote is the worse failure, and a typo should not
 # quietly turn a safety feature off.
@@ -400,23 +415,50 @@ record_failures() {   # <profile> <unison-rc> <captured-output>
   _rfn=$(parse_unison_failures "$3")
   _rff=$(failed_file "$1")
   if [ -z "$_rfn" ]; then
-    # Nothing failing: drop the record entirely, so its ABSENCE is the signal
-    # that this profile is clean.
-    rm -f "$_rff" 2>/dev/null
+    if [ "$2" = 0 ]; then
+      # Genuinely clean: drop the record entirely, so its ABSENCE is the signal
+      # that this profile has nothing outstanding.
+      rm -f "$_rff" 2>/dev/null
+      return 0
+    fi
+    # UNISON SAYS SOMETHING FAILED AND charon CANNOT NAME IT. "I parsed no
+    # paths" is NOT "nothing is failing", and treating it as such used to WIPE
+    # the record -- including a streak that was about to unwedge a real fault.
+    #
+    # This is a live blind spot, not a hypothetical one: unison reports a
+    # PROPAGATION failure as `Failed [path]: reason` and exits 2, but a SCAN or
+    # digest failure (an unreadable source file, say) is worded differently and
+    # exits 1. Measured 2026-09-26. So the record is LEFT ALONE and the gap is
+    # said out loud, which is the only honest thing to do about output charon
+    # does not understand -- silence here would have hidden the whole class.
+    log_warn "profile '$1': unison exited $2 but charon could not attribute it"\
+             "to any path (it reports propagation failures as 'Failed"\
+             "[path]:'; a scan or digest error is worded otherwise). Keeping"\
+             "the previous record. See the journal for unison's own words."
     return 0
   fi
   mkdir -p "$FAILED_DIR" 2>/dev/null || return 0
   _rfnow=$(date +%s)
-  # SINCE survives only while the SET is unchanged. A different set of paths is
-  # a NEW fault, not a continuation of the old one, and reporting it as "failing
-  # since" the older timestamp would overstate how long this has been true.
+  # SINCE and STREAK both survive only while the SET is unchanged. A different
+  # set of paths is a NEW fault, not a continuation of the old one: reporting it
+  # as "failing since" the older timestamp would overstate how long this has
+  # been true, and carrying the streak across would count two faults as one.
+  #
+  # STREAK counts CONSECUTIVE COMPLETED PASSES that reported this identical set.
+  # It only advances when unison reached its own verdict, so an interrupted or
+  # timed-out pass does not count -- which is what makes it a measure of "tried
+  # properly and failed again" rather than "was cut short again".
   _rfs=$_rfnow
+  _rfk=1
   if [ "$(failed_paths "$1")" = "$_rfn" ]; then
     _rfp=$(failed_get "$1" SINCE)
     case $_rfp in ''|*[!0-9]*) : ;; *) _rfs=$_rfp ;; esac
+    _rfc=$(failed_get "$1" STREAK)
+    case $_rfc in ''|*[!0-9]*) : ;; *) _rfk=$((_rfc + 1)) ;; esac
   fi
   { printf 'SINCE=%s\n' "$_rfs"
     printf 'LAST=%s\n' "$_rfnow"
+    printf 'STREAK=%s\n' "$_rfk"
     printf 'RC=%s\n' "$2"
     printf '%s\n' "$_rfn" | sed 's/^/FAILED=/'
   } >"$_rff" 2>/dev/null || log_warn "could not record failed paths for '$1'"
@@ -432,12 +474,15 @@ failed_summary() {   # <profile> [now-epoch]
   _fsc=$(printf '%s\n' "$_fsp" | wc -l | tr -d ' ')
   _fss=$(failed_get "$1" SINCE)
   _fsn=${2:-$(date +%s)}
-  if [ -n "$_fss" ]; then
-    printf '%s path(s) failing, first seen %s ago' "$_fsc" \
-      "$(human_age "$_fss" "$_fsn")"
-  else
-    printf '%s path(s) failing' "$_fsc"
-  fi
+  # The STREAK is the number that tells a reader this is a WEDGE rather than a
+  # bad afternoon: "6 paths failing, 12 passes running" is a different fact from
+  # "6 paths failing" and it is the one the 2026-09-24 incident needed said out
+  # loud. Only shown from 2 up, since "1 passes running" is noise.
+  _fsk=$(failed_get "$1" STREAK)
+  case $_fsk in ''|*[!0-9]*) _fsk= ;; 1) _fsk= ;; esac
+  printf '%s path(s) failing' "$_fsc"
+  [ -z "$_fsk" ] || printf ', %s passes running' "$_fsk"
+  [ -z "$_fss" ] || printf ', first seen %s ago' "$(human_age "$_fss" "$_fsn")"
 }
 
 #### state, as data ####
@@ -1344,7 +1389,7 @@ settled_paths() {   # <profile> <new-failure-set-file, sorted>
 # the directory and comparing strings cannot misread a name. It fails SAFE
 # either way (a miss leaves litter for the blind sweep; it can never delete the
 # wrong file), but a silent miss is exactly the kind of thing nobody notices.
-sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path>
+sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path> [reason]
   _spd=$(dirname -- "$3"); _spb=$(basename -- "$3")
   _spn=0
   for _spr in "$1" "$2"; do
@@ -1358,14 +1403,78 @@ sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path>
       _spm=$(basename -- "$_spc"); _spm=${_spm#.unison.}
       _spm=${_spm%.unison.tmp}; _spm=${_spm%.*}
       [ "$_spm" = "$_spb" ] || continue
+      # The REASON is a parameter because two callers share this: a path that
+      # SETTLED (its temp is now litter) and a path being UNWEDGED (its temp has
+      # had its chances and is in the way). Logging both as "settled" would
+      # describe the second one as the opposite of what it is.
       if rm -f -- "$_spc" 2>/dev/null; then
-        log_info "settled '$3': removed orphaned temp $_spc"
+        log_info "${4:-settled} '$3': removed transfer temp $_spc"
         _spn=$((_spn + 1))
       else
-        log_warn "settled '$3': could NOT remove $_spc"
+        log_warn "${4:-settled} '$3': could NOT remove $_spc"
       fi
     done
   done
+  return 0
+}
+
+# --- unwedging a profile that keeps failing the SAME way ---------------------
+# THE PROBLEM THIS EXISTS FOR (2026-09-24, four hours, both boxes). A profile
+# can fail the identical propagation every pass, forever: the attempt cannot
+# succeed, so unison never commits the archive, so the next pass tries exactly
+# the same thing. charon faulted loudly and correctly each time and the fault
+# never cleared, because nothing charon did could clear it -- and neither could
+# an integrator, since `install` cannot change what a past run returned. A human
+# had to run a pass by hand. Everything built since narrowed the blast radius;
+# none of it stopped a profile wedging.
+#
+# THE ONE CAUSE WE CAN ACT ON is a stranded transfer temp. Measured in a scratch
+# pair 2026-09-25: a stranded temp is ITSELF enough to make the next pass exit 2
+# with "Destination updated during synchronization", reproducibly on one box and
+# never on another. So the temp, whose whole purpose is to help the next
+# attempt, can be what defeats it.
+#
+# WHY THIS IS NOT THE AGE GATE AGAIN, and why it is safe to be more aggressive:
+# the sweep's gate exists because a RECENT temp is probably a live resume point.
+# For a path that has now failed N CONSECUTIVE COMPLETED passes, that premise is
+# measurably false -- the resume point has had N chances and helped none of
+# them. Critically, an interrupted pass does NOT advance the streak (its rc is
+# not trusted), so a path that is genuinely resuming across several long
+# transfers never reaches the threshold this way. The streak only counts "unison
+# finished, looked, and reported this path failed again".
+#
+# WHAT IT DELIBERATELY DOES NOT DO: touch the archive. Invalidating a unison
+# archive forces a cold rescan of every file through FUSE, which the notes
+# measured at roughly an hour per profile and which loses all progress if
+# killed. That is a cure worse than the disease. Dropping a temp costs at most
+# one re-transfer of one file, and a temp is never content.
+#
+# ONCE PER FAULT, at the moment the streak CROSSES the threshold. Acting on
+# every later pass would be a no-op (the temps are gone) that logged a warning
+# every time, and a warning that fires every time is one nobody reads.
+unwedge_profile() {   # <profile> <streak> <failing paths>
+  _uwa=$(unwedge_after)
+  # The 0 test is DEFENCE IN DEPTH, not load-bearing, and mutation testing says
+  # so honestly: a streak starts at 1 and this only ever compares EQUAL, so 0
+  # could never match anyway. Kept because it states the intent of 0 and would
+  # still hold if the streak ever started counting from zero.
+  [ "$_uwa" -gt 0 ] || return 0
+  [ "$2" = "$_uwa" ] || return 0
+  [ -n "$3" ] || return 0
+  # NAME THE PATHS IN THE WARNING ITSELF. The per-path removals below log at
+  # INFO, and charon-sync pins LOG_LEVEL=2, so in production those lines are
+  # SUPPRESSED -- a warning saying only "2 paths" would be charon deleting
+  # from
+  # someone's remote on its own initiative without saying which files. Bounded
+  # to three so a wide fault cannot flood the journal.
+  _uwn=$(printf '%s\n' "$3" | wc -l | tr -d ' ')
+  _uwl=$(printf '%s\n' "$3" | head -3 | tr '\n' ';' | sed 's/;$//')
+  [ "$_uwn" -le 3 ] || _uwl="$_uwl; ... and $((_uwn - 3)) more"
+  log_warn "profile '$1' has failed the SAME $_uwn path(s) $2 passes"\
+           "running; dropping their transfer temps so the next pass starts"\
+           "clean (a temp is never content, and these have had $2 chances to"\
+           "help): $_uwl"
+  sweep_settled "$1" "$3" unwedge
   return 0
 }
 
@@ -1374,13 +1483,14 @@ sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path>
 # ASSUMES THE CALLER HOLDS THE SYNC LOCK, and must: it runs from inside a pass,
 # which took the lock in run_with_lock and holds it for the whole pass. Taking
 # it again here would skip every time.
-sweep_settled() {   # <profile> <settled paths, newline separated>
+sweep_settled() {   # <profile> <paths, newline separated> [reason]
   [ -n "$2" ] || return 0
   _ssr=$(resolve_profile_roots "$1" 2>/dev/null) || return 0
   _ssm=${_ssr%%|*}; _sst=${_ssr#*|}; _ssc=${_sst%%|*}
+  _ssw=${3:-settled}
   printf '%s\n' "$2" | while IFS= read -r _ssp; do
     [ -n "$_ssp" ] || continue
-    sweep_path_crumbs "$_ssm" "$_ssc" "$_ssp"
+    sweep_path_crumbs "$_ssm" "$_ssc" "$_ssp" "$_ssw"
   done
   return 0
 }
@@ -1607,6 +1717,12 @@ run_sync_profile() {
     fi
     record_failures "$PROFILE" "$RET" "$CAPTURE"
     rm -f "$CAPTURE"
+    # AFTER recording, so the streak this reads is the one this pass just made.
+    # A profile that keeps failing the identical way is the fault nothing could
+    # clear until now; see unwedge_profile for why dropping the temps is the one
+    # safe intervention available.
+    unwedge_profile "$PROFILE" "$(failed_get "$PROFILE" STREAK)" \
+      "$(failed_paths "$PROFILE")"
   fi
 
   if [ $RET -eq 0 ]; then

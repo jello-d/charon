@@ -118,7 +118,7 @@ for rc in 3 124 137; do
     list is incomplete by definition"
 done
 
-# A trusted run with NO failures CLEARS the record, so its absence is the
+# A SUCCESSFUL run with no failures CLEARS the record, so its absence is the
 # signal that the profile is clean.
 : > "$T/clean"
 record_failures docs 0 "$T/clean"
@@ -126,6 +126,27 @@ record_failures docs 0 "$T/clean"
   || fail "a clean pass did not clear the failed-path record"
 [ ! -f "$(failed_file docs)" ] \
   || fail "a clean pass left the record FILE behind; its absence is the signal"
+
+# ...but a FAILING run that charon cannot ATTRIBUTE must NOT clear it. "I parsed
+# no paths" is not "nothing is failing", and the difference is load-bearing:
+# unison words a PROPAGATION failure as `Failed [path]:` and exits 2, while a
+# SCAN or digest failure (an unreadable source file) is worded otherwise and
+# exits 1. Measured 2026-09-26. Wiping the record on that would also wipe a
+# streak that was about to unwedge a real fault.
+record_failures docs 2 "$T/out"
+_keep=$(failed_paths docs)
+[ -n "$_keep" ] || fail "setup for the unattributable case recorded nothing"
+for rc in 1 2; do
+  _msg=$(record_failures docs "$rc" "$T/clean" 2>&1)
+  [ "$(failed_paths docs)" = "$_keep" ] \
+    || fail "an rc $rc pass that charon could not attribute to any path WIPED
+    the record; it now holds: [$(failed_paths docs)]"
+  case $_msg in
+    *"could not attribute"*) : ;;
+    *) fail "charon silently ignored an rc $rc failure it could not parse; a
+       blind spot has to be LOUD: $_msg" ;;
+  esac
+done
 
 # ----------------------------------------------------------------- part 3 ----
 # SINCE means what it says: it survives an UNCHANGED set and resets on a
@@ -236,8 +257,11 @@ esac
 # END TO END, with REAL unison actually failing. A parse validated only against
 # a canned sample is a parse validated against my own idea of the output; this
 # is the assertion that charon and unison agree in practice, capture and all.
+# Everything from here needs REAL unison, and that includes the unit-level
+# parts below, which is worth saying plainly: a box without unison exercises
+# only parts 1-5, and the message says so rather than reporting a full pass.
 command -v unison >/dev/null 2>&1 || {
-  pass "parse, trust gate, SINCE and report (end-to-end skipped: no unison)"
+  pass "parse, gate, SINCE, report only (no unison: parts 6-12 skipped)"
   exit 0
 }
 for s in systemctl systemd-run mountpoint; do
@@ -430,4 +454,167 @@ rm -f "$T/bin/unison"
   || fail "an interrupted pass overwrote the failure record with its own
   truncated list; got: $(failed_paths docs)"
 
-pass "unison's failed paths parsed, gated, dated, reported and settled"
+# ---------------------------------------------------------------- part 11 ----
+# UNWEDGING: the fault that nothing could clear.
+#
+# A profile that fails the identical propagation every pass stays failed
+# forever -- the attempt cannot succeed, so unison never commits the archive, so
+# the next pass tries exactly the same thing. That ran for four hours on
+# 2026-09-24 and a human had to break it by hand. The one safe intervention is
+# to drop the transfer temps for the failing paths: a temp is never content, it
+# is measurably not helping after N tries, and a stranded one is itself enough
+# to cause this error.
+rm -rf "$T/state/failed"
+: > "$T/canned"
+printf 'Failed [wedged one.psp]: Destination updated during synchronization\n' \
+  >> "$T/canned"
+printf 'Failed [wedged two.png]: Destination updated during synchronization\n' \
+  >> "$T/canned"
+mkdir -p "$T/cache/D" "$T/src/D"
+W1="$T/cache/D/.unison.wedged one.psp.dead01.unison.tmp"
+W2="$T/src/D/.unison.wedged two.png.dead02.unison.tmp"
+
+# Passes 1 and 2: the streak builds and NOTHING is touched. Intervening on the
+# first failure would destroy a live resume point, which is the whole reason
+# this waits.
+printf 'partial' > "$W1"; printf 'partial' > "$W2"
+for n in 1 2; do
+  record_failures docs 2 "$T/canned"
+  [ "$(failed_get docs STREAK)" = "$n" ] \
+    || fail "after pass $n the streak reads $(failed_get docs STREAK)"
+  unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
+    >/dev/null 2>&1
+  [ -f "$W1" ] && [ -f "$W2" ] \
+    || fail "the temps were dropped after only $n failure(s); a temp that has
+    not had its chances is a live resume point and must be left alone"
+done
+
+# Pass 3 crosses the default threshold: both temps go, on BOTH replicas, and the
+# failure record is untouched (this clears the obstacle, it does not pretend the
+# fault is over).
+record_failures docs 2 "$T/canned"
+[ "$(failed_get docs STREAK)" = 3 ] || fail "the streak did not reach 3"
+_uw=$(unwedge_profile docs "$(failed_get docs STREAK)" \
+        "$(failed_paths docs)" 2>&1)
+[ -e "$W1" ] && fail "the cache-side temp survived the unwedge"
+[ -e "$W2" ] && fail "the mount-side temp survived the unwedge"
+[ -n "$(failed_paths docs)" ] \
+  || fail "the unwedge cleared the failure RECORD; it removes the obstacle, it
+  does not decide the fault is over -- only a real pass can say that"
+case $_uw in
+  *"3 passes running"*|*"same"*) : ;;
+  *) fail "the unwedge said nothing a human could act on: $_uw" ;;
+esac
+# It must SAY it is intervening. This deletes from the user's remote on its own
+# initiative, so silence would be the wrong shape entirely.
+printf '%s\n' "$_uw" | grep -q 'wedged one.psp' \
+  || fail "the unwedge did not name the paths it acted on: $_uw"
+
+# Pass 4: ONCE per fault. Acting again would be a no-op that logged every pass,
+# and a warning that fires every time is one nobody reads.
+printf 'partial' > "$W1"
+record_failures docs 2 "$T/canned"
+[ "$(failed_get docs STREAK)" = 4 ] || fail "the streak did not reach 4"
+unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
+  >/dev/null 2>&1
+[ -f "$W1" ] \
+  || fail "the unwedge fired again past the threshold; it acts once per fault"
+
+# A CHANGED SET IS A NEW FAULT, so the streak restarts and the clock with it.
+printf 'Failed [something else.txt]: Error\n' > "$T/canned2"
+record_failures docs 2 "$T/canned2"
+[ "$(failed_get docs STREAK)" = 1 ] \
+  || fail "the streak survived a CHANGED failure set: $(failed_get docs STREAK)"
+
+# AN INTERRUPTED PASS MUST NOT ADVANCE IT. This is what makes the streak mean
+# "tried properly and failed again" rather than "was cut short again", and it is
+# what keeps a genuinely resuming large transfer from ever reaching the
+# threshold.
+record_failures docs 2 "$T/canned"
+_k=$(failed_get docs STREAK)
+for rc in 3 124 137; do
+  record_failures docs "$rc" "$T/canned"
+  [ "$(failed_get docs STREAK)" = "$_k" ] \
+    || fail "an interrupted pass (rc $rc) advanced the streak to
+    $(failed_get docs STREAK); a resuming transfer would then be unwedged out
+    from under itself"
+done
+
+# THE THRESHOLD IS THE USER'S, and 0 disables the whole thing.
+printf 'UNWEDGE_AFTER=0\n' > "$CFG/charon.conf"
+rm -rf "$T/state/failed"; printf 'partial' > "$W1"; printf 'partial' > "$W2"
+for n in 1 2 3 4 5; do
+  record_failures docs 2 "$T/canned"
+  unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
+    >/dev/null 2>&1
+done
+[ -f "$W1" ] \
+  || fail "UNWEDGE_AFTER=0 did not disable the unwedge"
+printf 'UNWEDGE_AFTER=2\n' > "$CFG/charon.conf"
+rm -rf "$T/state/failed"; printf 'partial' > "$W1"; printf 'partial' > "$W2"
+record_failures docs 2 "$T/canned"
+unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
+  >/dev/null 2>&1
+[ -f "$W1" ] || fail "UNWEDGE_AFTER=2 fired on the first failure"
+record_failures docs 2 "$T/canned"
+unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
+  >/dev/null 2>&1
+[ -e "$W1" ] && fail "UNWEDGE_AFTER=2 did not fire on the second failure"
+rm -f "$CFG/charon.conf"
+
+# The streak reaches the human: a count of paths alone reads as a bad
+# afternoon, where "N passes running" reads as a wedge.
+rm -rf "$T/state/failed"
+record_failures docs 2 "$T/canned"
+case "$(failed_summary docs)" in
+  *"passes running"*) fail "the summary claims a streak after ONE failure" ;;
+esac
+record_failures docs 2 "$T/canned"
+case "$(failed_summary docs)" in
+  *"2 passes running"*) : ;;
+  *) fail "the summary hides the streak: $(failed_summary docs)" ;;
+esac
+
+# ---------------------------------------------------------------- part 12 ----
+# THE WHOLE LOOP, COMPOSED, WITH REAL UNISON. Part 11 proves the state machine
+# against canned output and part 6 proves the parse against reality; this is the
+# one that proves they work TOGETHER over consecutive real failing passes, which
+# is the only form the 2026-09-24 fault ever took.
+#
+# The wedge is induced with an unwritable destination directory, the one
+# induction measured to produce a real REPEATING `Failed [path]:` at rc 2. The
+# removal itself cannot succeed there (rm needs a writable directory, and charon
+# says so loudly when it cannot); part 11 covers removal. What this pins is the
+# TIMING: the streak builds, the intervention happens ONCE, and it lands at the
+# threshold rather than on the first failure or on every pass.
+rm -rf "$T/state/failed" "$T/uni" "$T/src/D" "$T/cache/D"
+mkdir -p "$T/uni" "$T/src/D" "$T/cache/D"
+printf 'base\n' > "$T/src/D/keep.txt"
+_c install >/dev/null 2>&1 || fail "install failed (part 12 setup)"
+_c sync docs >/dev/null 2>&1
+[ -f "$T/cache/D/keep.txt" ] || fail "the part 12 baseline did not populate"
+printf 'content\n' > "$T/src/D/wedge me.psp"
+chmod a-w "$T/cache/D"
+_fired=0
+_at=never
+for n in 1 2 3 4; do
+  _e=$(_c sync docs 2>&1 >/dev/null) || :
+  _k=$(failed_get docs STREAK)
+  if [ "$_k" != "$n" ]; then
+    chmod u+w "$T/cache/D"
+    fail "after real failing pass $n the streak reads '$_k', not $n"
+  fi
+  case $_e in
+    *"failed the SAME"*) _fired=$((_fired + 1)); _at=$n ;;
+  esac
+done
+chmod u+w "$T/cache/D"
+[ "$_fired" = 1 ] \
+  || fail "the unwedge fired $_fired times across 4 real failing passes; once
+  per fault, or it is a warning nobody reads"
+[ "$_at" = 3 ] \
+  || fail "the unwedge fired at pass $_at, not at the threshold of 3"
+failed_paths docs | grep -qx 'wedge me.psp' \
+  || fail "the composed run recorded the wrong path: $(failed_paths docs)"
+
+pass "unison's failed paths parsed, gated, dated, reported, settled, unwedged"

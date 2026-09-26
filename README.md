@@ -53,12 +53,22 @@ the install rather than to any one tree:
 
     SWEEP=daily                # daily | weekly | off (off: no timer at all)
     CRUMB_AGE_MIN=1440         # minutes before an orphaned Unison temp goes
+    UNWEDGE_AFTER=3            # identical failures before charon intervenes
 
 With `SWEEP=off` nothing is collected automatically, `charon sweep` still works
 by hand, and `check` reports that state as correct rather than as drift: a
 deliberate choice is not something charon will argue with. The age gate is a
 safety property rather than tidiness, since a recent temp may be the live resume
 point of an interrupted transfer.
+
+A profile can fail the *same* propagation on every pass indefinitely: the
+attempt never succeeds, so Unison never commits the archive, so the next pass
+repeats it. After `UNWEDGE_AFTER` consecutive identical failures charon drops
+those paths' transfer temps so the next pass starts clean, since a stranded temp
+is itself enough to cause this and one that has had that many chances has
+demonstrably not helped. An interrupted pass does not count, so a genuinely
+resuming transfer is never unwedged out from under itself, and the Unison
+archive is never touched.
 
 A **source** (`sources.d/<name>.conf`) is one tree to cache, and how it exists:
 
