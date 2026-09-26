@@ -363,16 +363,36 @@ extract_section() {
 
 # The failed paths from a captured run, one per line, deduplicated.
 #
-# Unison's wording under the flags charon uses (-batch -auto -ui text -silent)
-# is exactly one line per failed path:
-#     Failed [<relative path>]: <reason>
-# The path is BRACKETED, which is the only reason a name containing spaces can
-# be recovered at all -- and every name that has ever caused trouble here has
-# had spaces in it. Measured 2026-09-26, unison 2.53.8. The capture is greedy so
-# that a path containing ']' survives; no unison reason contains ']: '.
+# TWO WORDINGS, because unison has two, and they are DISJOINT. All measured
+# 2026-09-26 on unison 2.53.8 under the flags charon uses
+# (-batch -auto -ui text -silent):
+#
+#  1. PROPAGATION failure, exit 2:   Failed [<relative path>]: <reason>
+#     The path is BRACKETED, which is the only reason a name containing spaces
+#     can be recovered -- and every name that has ever caused trouble in this
+#     project has had spaces. Greedy capture, so a path containing ']' survives;
+#     no unison reason contains ']: '.
+#
+#  2. SCAN failure, exit 1:          "         error            <relative path>"
+#     An unreadable file or directory, a fifo, a socket. This row is the ONLY
+#     reliable source for these: the accompanying line is inconsistent, being
+#     `Error in digesting <ABSOLUTE path>:` for an unreadable file, `Error in
+#     scanning directory:` WITH NO PATH AT ALL for an unreadable directory, and
+#     absent entirely for a fifo or a socket. Measured across all four.
+#     Neither form truncates a long path; the elision with "..." that this
+#     project has seen belongs to the PROGRESS display, not to these rows.
+#
+# Missing form 2 was a live blind spot, not a theoretical one: an exit-1 fault
+# recorded no paths, so it reported nothing, built no streak and never unwedged.
+#
+# The one concession: form 2's row is column-padded, so a path that itself ENDS
+# in a space loses it. That fails safe (a crumb lookup under a near-miss name
+# simply finds nothing) and the alternative is unparseable.
 parse_unison_failures() {   # <captured-output-file>
   [ -f "$1" ] || return 0
-  sed -n 's/^Failed \[\(.*\)\]: .*$/\1/p' "$1" | sort -u
+  { sed -n 's/^Failed \[\(.*\)\]: .*$/\1/p' "$1"
+    sed -n 's/^ *error  *\(.*[^ ]\) *$/\1/p' "$1"
+  } | sort -u
 }
 
 # Did unison reach its OWN verdict, so that its failure list is COMPLETE?
@@ -482,7 +502,10 @@ failed_summary() {   # <profile> [now-epoch]
   case $_fsk in ''|*[!0-9]*) _fsk= ;; 1) _fsk= ;; esac
   printf '%s path(s) failing' "$_fsc"
   [ -z "$_fsk" ] || printf ', %s passes running' "$_fsk"
-  [ -z "$_fss" ] || printf ', first seen %s ago' "$(human_age "$_fss" "$_fsn")"
+  # human_age ALREADY ends in "ago" (and can say "never" or "in the future"), so
+  # this must not add another one. It read "first seen 0s ago ago" until a real
+  # run put it in front of me.
+  [ -z "$_fss" ] || printf ', first seen %s' "$(human_age "$_fss" "$_fsn")"
 }
 
 #### state, as data ####
@@ -1389,27 +1412,34 @@ settled_paths() {   # <profile> <new-failure-set-file, sorted>
 # the directory and comparing strings cannot misread a name. It fails SAFE
 # either way (a miss leaves litter for the blind sweep; it can never delete the
 # wrong file), but a silent miss is exactly the kind of thing nobody notices.
+# The crumbs belonging to ONE path under ONE root, one per line. PURE: no
+# logging, no deleting, so the same matcher serves both the code that removes
+# them and the code that needs to know whether there is anything to remove.
+path_crumbs() {   # <root> <relative-path>
+  _pcb=$(basename -- "$2")
+  _pcdir=$1/$(dirname -- "$2")
+  [ -d "$_pcdir" ] || return 0
+  for _pcc in "$_pcdir"/.unison.*.unison.tmp; do
+    [ -f "$_pcc" ] || continue
+    # .unison.<name>.<hash>.unison.tmp -> <name>, with the hash being the LAST
+    # dot-component (a name of its own may well contain dots).
+    _pcm=$(basename -- "$_pcc"); _pcm=${_pcm#.unison.}
+    _pcm=${_pcm%.unison.tmp}; _pcm=${_pcm%.*}
+    [ "$_pcm" = "$_pcb" ] || continue
+    printf '%s\n' "$_pcc"
+  done
+}
+
 sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path> [reason]
-  _spd=$(dirname -- "$3"); _spb=$(basename -- "$3")
-  _spn=0
   for _spr in "$1" "$2"; do
     [ -n "$_spr" ] || continue
-    _spdir=$_spr/$_spd
-    [ -d "$_spdir" ] || continue
-    for _spc in "$_spdir"/.unison.*.unison.tmp; do
-      [ -f "$_spc" ] || continue
-      # .unison.<name>.<hash>.unison.tmp -> <name>, with the hash being the
-      # LAST dot-component (a name of its own may well contain dots).
-      _spm=$(basename -- "$_spc"); _spm=${_spm#.unison.}
-      _spm=${_spm%.unison.tmp}; _spm=${_spm%.*}
-      [ "$_spm" = "$_spb" ] || continue
-      # The REASON is a parameter because two callers share this: a path that
-      # SETTLED (its temp is now litter) and a path being UNWEDGED (its temp has
-      # had its chances and is in the way). Logging both as "settled" would
-      # describe the second one as the opposite of what it is.
+    # The REASON is a parameter because two callers share this: a path that
+    # SETTLED (its temp is now litter) and a path being UNWEDGED (its temp has
+    # had its chances and is in the way). Logging both as "settled" would
+    # describe the second one as the opposite of what it is.
+    path_crumbs "$_spr" "$3" | while IFS= read -r _spc; do
       if rm -f -- "$_spc" 2>/dev/null; then
         log_info "${4:-settled} '$3': removed transfer temp $_spc"
-        _spn=$((_spn + 1))
       else
         log_warn "${4:-settled} '$3': could NOT remove $_spc"
       fi
@@ -1461,19 +1491,44 @@ unwedge_profile() {   # <profile> <streak> <failing paths>
   [ "$_uwa" -gt 0 ] || return 0
   [ "$2" = "$_uwa" ] || return 0
   [ -n "$3" ] || return 0
-  # NAME THE PATHS IN THE WARNING ITSELF. The per-path removals below log at
-  # INFO, and charon-sync pins LOG_LEVEL=2, so in production those lines are
-  # SUPPRESSED -- a warning saying only "2 paths" would be charon deleting
-  # from
-  # someone's remote on its own initiative without saying which files. Bounded
-  # to three so a wide fault cannot flood the journal.
+  # NAME THE PATHS IN THE WARNING ITSELF. The per-path removals log at INFO, and
+  # charon-sync pins LOG_LEVEL=2, so in production those lines are SUPPRESSED --
+  # a warning saying only "2 paths" would be charon deleting from someone's
+  # remote on its own initiative without saying which files. Bounded to three so
+  # a wide fault cannot flood the journal.
   _uwn=$(printf '%s\n' "$3" | wc -l | tr -d ' ')
   _uwl=$(printf '%s\n' "$3" | head -3 | tr '\n' ';' | sed 's/;$//')
   [ "$_uwn" -le 3 ] || _uwl="$_uwl; ... and $((_uwn - 3)) more"
-  log_warn "profile '$1' has failed the SAME $_uwn path(s) $2 passes"\
-           "running; dropping their transfer temps so the next pass starts"\
-           "clean (a temp is never content, and these have had $2 chances to"\
-           "help): $_uwl"
+
+  # COUNT WHAT THERE IS TO DROP BEFORE CLAIMING TO DROP IT. Dropping a temp is
+  # the only lever charon has, and it does not fit every wedge: a SCAN failure
+  # (an unreadable file, a fifo, a socket) has no temp at all, and nor does a
+  # propagation failure that never got as far as writing one. Announcing an
+  # intervention and then silently doing nothing is the worst of both, so when
+  # there is nothing to drop charon says THAT instead -- which is itself the
+  # useful signal: this profile is wedged and charon cannot help.
+  _uwr=$(resolve_profile_roots "$1" 2>/dev/null) || return 0
+  _uwm=${_uwr%%|*}; _uwt=${_uwr#*|}; _uwc=${_uwt%%|*}
+  _uwf=$(mktemp) || return 0
+  printf '%s\n' "$3" | while IFS= read -r _uwp; do
+    [ -n "$_uwp" ] || continue
+    path_crumbs "$_uwm" "$_uwp"
+    path_crumbs "$_uwc" "$_uwp"
+  done >"$_uwf"
+  _uwk=$(wc -l <"$_uwf" | tr -d ' ')
+  rm -f "$_uwf"
+
+  if [ "$_uwk" -eq 0 ]; then
+    log_warn "profile '$1' has failed the SAME $_uwn path(s) $2 passes running"\
+             "and charon has NOTHING it can do: there are no transfer temps to"\
+             "drop, so this is not a stale-temp wedge and it needs a human."\
+             "Paths: $_uwl"
+    return 0
+  fi
+  log_warn "profile '$1' has failed the SAME $_uwn path(s) $2 passes running;"\
+           "dropping $_uwk transfer temp(s) so the next pass starts clean (a"\
+           "temp is never content, and these have had $2 chances to help):"\
+           "$_uwl"
   sweep_settled "$1" "$3" unwedge
   return 0
 }

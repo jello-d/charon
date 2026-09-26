@@ -91,6 +91,86 @@ printf 'Failed [odd]name.txt]: Error\n' > "$T/out2"
 [ -z "$(parse_unison_failures "$T/nonexistent")" ] \
   || fail "parse_unison_failures invented output for a missing file"
 
+
+# --- FORM 2: the SCAN failure row, exit 1 -------------------------------------
+# Missing this was a LIVE blind spot: an exit-1 fault recorded no paths, so it
+# reported nothing, built no streak and never unwedged. The row below is real
+# unison output, byte for byte: nine spaces, "error", twelve spaces, the path,
+# two trailing spaces. Captured 2026-09-26.
+cat > "$T/scan" <<'EOF'
+Contacting server...
+Looking for changes
+         error            unreadable.txt  
+Error in digesting /tmp/x/L/unreadable.txt:
+/tmp/x/L/unreadable.txt: Permission denied
+         error            a long dir/deep/Fenix Watchface - tuned.psp  
+         error            blocked dir  
+EOF
+got=$(parse_unison_failures "$T/scan")
+want='a long dir/deep/Fenix Watchface - tuned.psp
+blocked dir
+unreadable.txt'
+[ "$got" = "$want" ] || fail "the SCAN-failure wording was not parsed. got:
+$got
+want:
+$want"
+
+# THE ROW IS THE ONLY RELIABLE SOURCE, which is why it and not the companion
+# line is parsed. Measured across four inductions: an unreadable FILE gives
+# `Error in digesting <ABSOLUTE path>:`, an unreadable DIRECTORY gives `Error in
+# scanning directory:` with NO PATH AT ALL, and a fifo or a socket gives no
+# companion line whatsoever. Only the `error` row is always present, and only it
+# is root-relative.
+printf 'Error in scanning directory:\n' > "$T/nopath"
+[ -z "$(parse_unison_failures "$T/nopath")" ] \
+  || fail "a companion line with no path in it yielded a path anyway:
+  $(parse_unison_failures "$T/nopath")"
+printf 'Error in digesting /abs/olute/path.txt:\n' > "$T/abspath"
+[ -z "$(parse_unison_failures "$T/abspath")" ] \
+  || fail "an ABSOLUTE-path companion line was parsed as a relative path, which
+  would send every crumb lookup to a directory that does not exist:
+  $(parse_unison_failures "$T/abspath")"
+
+# BOTH WORDINGS AT ONCE, merged and deduplicated. They are disjoint in practice
+# (rc 2 emits only Failed[], rc 1 only the error row) but nothing should depend
+# on that.
+cat > "$T/both" <<'EOF'
+Failed [propagated.psp]: Error in copying locally:
+         error            scanned.txt  
+Failed [shared name.txt]: Destination updated during synchronization
+         error            shared name.txt  
+EOF
+[ "$(parse_unison_failures "$T/both")" = 'propagated.psp
+scanned.txt
+shared name.txt' ] \
+  || fail "the two wordings did not merge and dedupe:
+  $(parse_unison_failures "$T/both")"
+
+# A NORMAL table row must NOT be read as a failure. These are what unison prints
+# for ordinary items, and a pattern loose enough to eat them would report every
+# synced file as failing.
+# The last row is the one that makes the COLUMN anchor visible rather than just
+# defensible: a file really named "error  report.txt" (a double space is a legal
+# filename, and this Drive is full of odd names). Anchored on the status column,
+# it is correctly ignored. Anchored on the WORD error anywhere in the line, it
+# would yield a phantom path "report.txt" from a file that synced perfectly.
+cat > "$T/normal" <<'EOF'
+new file ---->            big.bin  
+file     ---->            plain.txt  
+         props            meta.txt  
+<---- changed             other.txt  
+         props            error  report.txt  
+EOF
+[ -z "$(parse_unison_failures "$T/normal")" ] \
+  || fail "ordinary reconciliation rows were parsed as failures:
+  $(parse_unison_failures "$T/normal")"
+
+# ...and the SAME awkward name, when it really does fail, parses in full.
+printf '         error            error  report.txt  \n' > "$T/awkward"
+[ "$(parse_unison_failures "$T/awkward")" = 'error  report.txt' ] \
+  || fail "a failing file whose own name starts with 'error  ' was mangled:
+  [$(parse_unison_failures "$T/awkward")]"
+
 # ----------------------------------------------------------------- part 2 ----
 # THE TRUST GATE, asserted from both sides.
 for rc in 0 1 2; do
@@ -520,6 +600,38 @@ unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
 [ -f "$W1" ] \
   || fail "the unwedge fired again past the threshold; it acts once per fault"
 
+
+# AND IT MUST NOT CLAIM TO INTERVENE WHEN IT CANNOT. Dropping a temp is the only
+# lever charon has, and it does not fit every wedge: a SCAN failure (an
+# unreadable file, a fifo) has no temp at all. Announcing an intervention and
+# then silently doing nothing would be the worst of both; saying "there is
+# nothing I can do" is itself the useful signal.
+rm -rf "$T/state/failed"
+printf 'Failed [no temp here.psp]: Destination updated\n' > "$T/notemp"
+for n in 1 2 3; do record_failures docs 2 "$T/notemp"; done
+[ "$(failed_get docs STREAK)" = 3 ] || fail "streak setup for the no-temp case"
+_nt=$(unwedge_profile docs 3 "$(failed_paths docs)" 2>&1)
+case $_nt in
+  *"NOTHING it can do"*) : ;;
+  *) fail "with no temps to drop the unwedge still announced an intervention
+     it could not make: $_nt" ;;
+esac
+case $_nt in
+  *"no temp here.psp"*) : ;;
+  *) fail "the no-temp warning did not name the wedged path: $_nt" ;;
+esac
+# ...and when there IS something, it says how many rather than implying all.
+printf 'partial' > "$T/cache/D/.unison.no temp here.psp.f00d.unison.tmp"
+rm -rf "$T/state/failed"
+for n in 1 2 3; do record_failures docs 2 "$T/notemp"; done
+_yt=$(unwedge_profile docs 3 "$(failed_paths docs)" 2>&1)
+case $_yt in
+  *"dropping 1 transfer temp"*) : ;;
+  *) fail "the unwedge did not report HOW MANY temps it dropped: $_yt" ;;
+esac
+[ -e "$T/cache/D/.unison.no temp here.psp.f00d.unison.tmp" ] \
+  && fail "the unwedge reported dropping a temp and left it there"
+
 # A CHANGED SET IS A NEW FAULT, so the streak restarts and the clock with it.
 printf 'Failed [something else.txt]: Error\n' > "$T/canned2"
 record_failures docs 2 "$T/canned2"
@@ -568,6 +680,13 @@ rm -rf "$T/state/failed"
 record_failures docs 2 "$T/canned"
 case "$(failed_summary docs)" in
   *"passes running"*) fail "the summary claims a streak after ONE failure" ;;
+esac
+# human_age already ends in "ago", so the summary must not add a second one.
+# This said "first seen 0s ago ago" until a real run put it in front of me.
+case "$(failed_summary docs)" in
+  *"ago ago"*) fail "the summary doubles 'ago': $(failed_summary docs)" ;;
+  *"first seen"*ago*) : ;;
+  *) fail "the summary lost its age: $(failed_summary docs)" ;;
 esac
 record_failures docs 2 "$T/canned"
 case "$(failed_summary docs)" in

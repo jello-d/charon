@@ -20,9 +20,12 @@ rather than pull or push.
 .B charon check " " [profile]
 Audit and report drift, including whether each generated Unison profile still
 matches what this version would write. Non-zero on drift. Also names the
-individual paths a profile is failing to propagate, and does so even when the
-unit itself succeeded: Unison exits non-zero only for a transfer failure, so a
-profile can be green overall with a path quietly stuck.
+individual paths a profile is failing on, and does so even when the unit itself
+succeeded: Unison exits non-zero only for a transfer failure, so a profile can
+be green overall with a path quietly stuck. Both kinds of failure are reported,
+a PROPAGATION failure (a file that could not be written to the other replica)
+and a SCAN failure (one that could not be read at all, such as an unreadable
+file, a fifo or a socket).
 .TP
 .B charon status
 Sources, profiles, and the artifacts they generate, plus any paths a profile is
@@ -124,8 +127,11 @@ archive so the next pass repeats it. When the same set of paths has failed this
 many COMPLETED passes running, charon drops those paths' transfer temps so the
 next pass starts clean: a stranded temp is itself enough to cause this, a temp
 is never content, and one that has had this many chances has demonstrably not
-helped. An interrupted or timed-out pass does not count towards the streak, so a
-genuinely resuming large transfer never reaches the threshold. It acts once per
+helped. Where there is no temp to drop \(em a scan failure has none \(em it says
+so rather than claiming an intervention it cannot make, which is itself the
+signal that the fault needs a human. An interrupted or timed-out pass does not
+count towards the streak, so a genuinely resuming large transfer never reaches
+the threshold. It acts once per
 fault and never touches the Unison archive, whose rebuild would cost far more
 than a re-transfer.
 .TP
