@@ -4,7 +4,7 @@
 # implementations in ../libexec.
 #
 #   charon sync   [profile]        reconcile (bidirectional). THE verb.
-#   charon check  [profile]        audit; non-zero on drift
+#   charon check  [profile]        audit; 1 drift, 2 fault (see charon(1))
 #   charon status                  sources, profiles, and where things live
 #   charon seed   [--priority]     bulk-populate the cache from the source
 #   charon sweep  [profile]        delete Unison temps orphaned on a replica
@@ -30,7 +30,7 @@ usage() {
 usage: charon <command> [args...]
 
   sync   [profile]     reconcile the cache with its source (all, or one)
-  check  [profile]     audit; non-zero on drift
+  check  [profile]     audit; 1 = drift (install fixes it), 2 = fault
   status               sources, profiles, and the artifacts they generate
   seed   [--priority]  bulk-populate the cache straight from the source
   sweep  [profile]     delete Unison transfer temps orphaned on either replica
@@ -64,12 +64,25 @@ case "${1:-}" in
   # --- the flattened surface ---
   sync)    shift; _sync_or_legacy "$@" ;;
   check)   shift
-           # BOTH halves, and the worst verdict wins. The mount unit is a
+           # BOTH halves, MERGED rather than last-wins. The mount unit is a
            # generated artifact too, and for a long time nothing diffed it.
-           _rc=0
-           APP_NAME="charon sync" "$_lib/charon-sync" check "$@" || _rc=$?
-           APP_NAME="charon mount" "$_lib/charon-mount" check || _rc=$?
-           exit $_rc ;;
+           #
+           # `|| _rc=$?` OVERWROTE, so with sync reporting drift and mount
+           # reporting a fault the answer depended on the order they ran in.
+           # Now the two verdicts merge properly: DRIFT wins over FAULT, so a
+           # caller that sees 2 knows there is nothing to re-provision.
+           #
+           # common.sh is sourced HERE rather than at the top so the merge rule
+           # has exactly ONE definition, shared with both impls. Scoped to this
+           # branch, which ends in exit, so nothing it defines can reach the
+           # commands the other branches exec.
+           _sc=0; _mc=0
+           APP_NAME="charon sync" "$_lib/charon-sync" check "$@" || _sc=$?
+           APP_NAME="charon mount" "$_lib/charon-mount" check || _mc=$?
+           # shellcheck disable=SC1091
+           . "$_lib/common.sh"
+           merge_verdict "$_sc" "$_mc" || exit $?
+           exit 0 ;;
   status)  shift; _sync config "$@" ;;
   seed)    shift
            case "${1:-}" in

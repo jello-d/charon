@@ -89,6 +89,69 @@ source_get() {   # <source> <KEY>
   printf '%s' "$_v"
 }
 
+# A CHECK VERDICT SAYS WHETHER AN APPLY WOULD HELP, which is a different
+# question from "is anything wrong" and the only one an integrator can act on.
+#
+#   0  clean
+#   1  DRIFT -- re-provisioning will plausibly fix this (an artifact differs
+#      from what this version would write, a unit is not enabled, a path charon
+#      owns is missing)
+#   2  FAULT -- it will not. The install is correct and something is failing, or
+#      the configuration itself is wrong. It needs time or a human.
+#
+# WHY IT MATTERS, measured on a live fleet 2026-09-24: an integrator that reads
+# "non-zero" as drift schedules a repair for a runtime fault, runs it, finds the
+# check still failing, and reports "bad state or a bug". tackup's own summary
+# code concedes the point in a comment -- "a check cannot tell the two apart" --
+# and works around it by calling everything "findings". charon CAN tell them
+# apart, so it should say which.
+#
+# DRIFT BEATS FAULT when both are present, deliberately: if anything repairable
+# is wrong the caller should repair first, and a fault that survives that is
+# reported by the next check. That is what makes it safe for an integrator to
+# skip the repair on a bare fault.
+#
+# Backward compatible by construction: every non-clean verdict is still
+# non-zero, so a caller that only tests success is unaffected.
+EX_DRIFT=1
+EX_FAULT=2
+CHECK_DRIFT=
+CHECK_FAULT=
+
+# Report one failing finding AND classify it. Every [FAIL]/[FAULT] line in a
+# check goes through one of these, so a finding cannot be reported without
+# saying which kind it is -- check_verdict fails loudly if one ever is.
+fail_drift() { printf '  [FAIL]  %s\n' "$*"; CHECK_DRIFT=1; }
+fail_fault() { printf '  [FAULT] %s\n' "$*"; CHECK_FAULT=1; }
+
+# The verdict, from the classes actually declared. <any-failure> is the caller's
+# own 0/1 aggregate, used ONLY to catch a finding that failed without
+# classifying itself: that is a bug in the check, and a bug that would silently
+# downgrade a real failure to "clean" is exactly the kind this project keeps
+# finding, so it is loud.
+check_verdict() {   # <any-failure: 0|1>
+  if [ -n "$CHECK_DRIFT" ]; then return "$EX_DRIFT"; fi
+  if [ -n "$CHECK_FAULT" ]; then return "$EX_FAULT"; fi
+  if [ "${1:-0}" != 0 ]; then
+    printf '  [FAIL]  BUG: a check failed without classifying itself as'
+    printf ' drift or fault; reporting drift to be safe\n'
+    return "$EX_DRIFT"
+  fi
+  return 0
+}
+
+# Merge two verdicts the same way: drift wins, then fault, then clean.
+merge_verdict() {   # <a> <b>
+  case "$1:$2" in
+    "$EX_DRIFT":*|*:"$EX_DRIFT") return "$EX_DRIFT" ;;
+    "$EX_FAULT":*|*:"$EX_FAULT") return "$EX_FAULT" ;;
+  esac
+  [ "$1" = 0 ] && [ "$2" = 0 ] && return 0
+  # Neither is a verdict charon defines (a crashed impl, say): say so rather
+  # than flattening it into one of ours.
+  return "$EX_DRIFT"
+}
+
 : "${APP_NAME:=$(basename "$0")}"
 : "${LOG_LEVEL:=3}"                    # 1=ERROR 2=WARN 3=INFO 4=TRACE
 

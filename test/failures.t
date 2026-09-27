@@ -319,19 +319,38 @@ exit 0
 EOF
 chmod +x "$T/bin/systemctl"
 record_failures docs 2 "$T/out"
+CHECK_DRIFT=; CHECK_FAULT=
 _ok=$(PATH="$T/bin:$PATH" check_profile_outcome docs); _okrc=$?
-[ "$_okrc" = 0 ] \
-  || fail "check_profile_outcome returned $_okrc for a unit whose last run
-  SUCCEEDED; stuck paths are not the unit failing"
+# It must REPORT the unit's own last run honestly...
 case $_ok in
-  *'[OK]'*) : ;;
-  *) fail "expected an [OK] verdict for a successful unit: $_ok" ;;
+  *'[OK]'*'last run: success'*) : ;;
+  *) fail "expected an [OK] line for the unit's successful last run: $_ok" ;;
+esac
+# ...and still FAIL on the paths stuck under it. This used to print them and
+# return SUCCESS, which is the presence-is-not-function trap: a green verdict
+# over a path that has not synced in days.
+[ "$_okrc" != 0 ] \
+  || fail "check_profile_outcome returned success for a unit whose last run
+  succeeded while paths were still failing under it"
+case $_ok in
+  *'[FAULT]'*) : ;;
+  *) fail "stuck paths under a green unit were not reported as a FAULT: $_ok" ;;
 esac
 case $_ok in
   *"3 path(s) failing"*) : ;;
-  *) fail "check said [OK] and said NOTHING about the 3 paths still failing
-     under it: $_ok" ;;
+  *) fail "check said nothing about the 3 paths still failing: $_ok" ;;
 esac
+# AND IT IS A FAULT, NOT DRIFT, which is the whole point of the classification:
+# no amount of re-provisioning makes a stuck path sync.
+PATH="$T/bin:$PATH" check_profile_outcome docs >/dev/null 2>&1 || :
+[ -n "$CHECK_FAULT" ] || fail "stuck paths did not set the FAULT class"
+[ -z "$CHECK_DRIFT" ] \
+  || fail "stuck paths were classified as DRIFT, which would send an integrator
+  round a re-provision loop that cannot converge"
+check_verdict 1; _vd=$?
+[ "$_vd" = "$EX_FAULT" ] \
+  || fail "the verdict for stuck paths was $_vd, expected EX_FAULT ($EX_FAULT)"
+CHECK_DRIFT=; CHECK_FAULT=
 
 # ----------------------------------------------------------------- part 6 ----
 # END TO END, with REAL unison actually failing. A parse validated only against

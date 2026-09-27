@@ -362,7 +362,7 @@ check_mount_template() {
     echo "  [OK]   $SYSTEMD_TEMPLATE matches this version's template"
     rm -f "$_rt"; return 0
   fi
-  echo "  [FAIL] $SYSTEMD_TEMPLATE DIFFERS from this version's"\
+  fail_drift "$SYSTEMD_TEMPLATE DIFFERS from this version's"\
        "template (hand-edited, or stale); run '${APP_NAME} install'"
   rm -f "$_rt"; return 1
 }
@@ -373,7 +373,7 @@ check_mount_template() {
 check_legacy_singleton() {
   systemctl --user list-unit-files 2>/dev/null | grep -q "^$LEGACY_UNIT" \
     || return 0
-  echo "  [FAIL] the retired singleton $LEGACY_UNIT is still installed;"\
+  fail_drift "the retired singleton $LEGACY_UNIT is still installed;"\
        "run '${APP_NAME} install' to sweep it"
   return 1
 }
@@ -389,13 +389,13 @@ check_source_instances() {
     if systemctl --user is-enabled "$_u" >/dev/null 2>&1; then
       echo "  [OK]   $_u enabled"
     else
-      echo "  [FAIL] $_u not enabled (source '$_s' will not mount at boot)"
+      fail_drift "$_u not enabled (source '$_s' will not mount at boot)"
       _sir=1
     fi
     if systemctl --user is-active "$_u" >/dev/null 2>&1; then
       echo "  [OK]   $_u active"
     else
-      echo "  [FAIL] $_u not active (source '$_s' is NOT mounted)"; _sir=1
+      fail_drift "$_u not active (source '$_s' is NOT mounted)"; _sir=1
     fi
   done
   [ -n "$_any" ] || echo "  [OK]   no rclone-backed source; nothing to mount"
@@ -408,7 +408,7 @@ check_orphan_instances() {
   _oir=0
   for _in in $(enabled_instances); do
     rclone_sources | grep -qx "$_in" && continue
-    echo "  [FAIL] $(mount_unit "$_in") is enabled but '$_in' is not an"\
+    fail_drift "$(mount_unit "$_in") is enabled but '$_in' is not an"\
          "rclone-backed source; it can never mount"
     _oir=1
   done
@@ -431,18 +431,18 @@ do_check() {
     echo "  [OK]   no rclone-backed source; charon mounts nothing here"
     check_legacy_singleton || _dcr=1
     check_orphan_instances || _dcr=1
-    return $_dcr
+    check_verdict "$_dcr"; return $?
   fi
   if [ ! -f "$TEMPLATE_FILE" ]; then
-    echo "  [FAIL] $SYSTEMD_TEMPLATE missing (run '${APP_NAME} install')"
-    return 1
+    fail_drift "$SYSTEMD_TEMPLATE missing (run '${APP_NAME} install')"
+    return "$EX_DRIFT"
   fi
   # All four run; none short-circuits, so one failure never hides the next.
   check_mount_template   || _dcr=1
   check_legacy_singleton || _dcr=1
   check_source_instances || _dcr=1
   check_orphan_instances || _dcr=1
-  return $_dcr
+  check_verdict "$_dcr"
 }
 
 do_install() {

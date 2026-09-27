@@ -329,6 +329,41 @@ and reports it as SKIPPED rather than OK.
 a fault. The reason is always logged, and additionally sent to
 .B CHARON_NOTIFY
 when one is configured.
+.PP
+.B charon check
+answers a different question:
+.I would re-provisioning help?
+An integrator that reads any non-zero as repairable drift will schedule a repair
+for a runtime fault, run it, find the check still failing, and have nothing
+useful to say about why.
+.TP
+.B 0
+clean.
+.TP
+.B 1
+.RB ( DRIFT )
+a generated artifact differs from what this version would write, a unit is not
+enabled, or a path charon owns is missing.
+.B charon install
+is expected to fix it. Reported as
+.BR [FAIL] .
+.TP
+.B 2
+.RB ( FAULT )
+it will not. The installation is correct and something is failing, or the
+configuration itself is wrong: a failed last run, paths that will not
+propagate, a source whose mount is gone, an unusable setting. It needs time or
+a human. Reported as
+.BR [FAULT] .
+.PP
+When both are present the verdict is
+.BR 1 ,
+deliberately: if anything repairable is wrong the caller should repair first,
+and a fault that survives that is reported by the next check. That ordering is
+what makes it safe for an integrator to skip the repair on a bare
+.BR 2 .
+Every non-clean verdict is still non-zero, so a caller that only tests for
+success is unaffected.
 .SH FILES
 .TP
 .I ~/.config/charon/charon.conf

@@ -11,7 +11,7 @@ One command, `charon`.
 ## Commands
 
     charon sync   [profile]        reconcile (bidirectional). THE verb.
-    charon check  [profile]        audit; non-zero on drift
+    charon check  [profile]        audit; 1 = drift, 2 = fault (see below)
     charon status                  sources, profiles, and what they generate
     charon seed   [--priority]     bulk-populate the cache from the source
     charon sweep  [profile]        delete orphaned Unison transfer temps
@@ -128,6 +128,25 @@ synchronously, then bulk-seeds the full tree in the background. Installing the
 *package* schedules nothing; only `install` does. Ships
 `share/charon/example.conf`, `example-source.conf` and `example-charon.conf`;
 `setup.sh bootstrap` copies the first into an empty `profiles.d`.
+
+## What `check` returns
+
+`charon check` answers *would re-provisioning help?*, not merely *is something
+wrong?* — because an integrator that reads any non-zero as repairable drift will
+schedule a repair for a runtime fault, run it, find the check still failing, and
+have nothing useful to say about why.
+
+    0  clean
+    1  DRIFT   a generated artifact differs from what this version writes, a
+               unit is not enabled, a path charon owns is missing. `charon
+               install` fixes it. Reported as [FAIL].
+    2  FAULT   it will not. The install is correct and something is failing, or
+               the config itself is wrong: a failed last run, paths that will
+               not propagate, a source whose mount is gone. Reported as [FAULT].
+
+With both present the verdict is **1**, so the caller repairs what it can and a
+surviving fault is reported by the next check. Every non-clean verdict is still
+non-zero, so a caller that only tests for success is unaffected.
 
 ## Configuration seams
 

@@ -637,7 +637,7 @@ check_names() {
   [ -n "$_bad" ] || return 0
   printf '%s\n' "$_bad" | while IFS= read -r _e; do
     [ -n "$_e" ] || continue
-    echo "  [FAIL] ${_e%%|*} '${_e#*|}' is not a usable name. Use only"\
+    fail_fault "${_e%%|*} '${_e#*|}' is not a usable name. Use only"\
          "letters, digits, '_' and '-'."
     echo "         It cannot name a systemd unit, and a name with a space"\
          "splits into one phantom entry per word. It is being SKIPPED."
@@ -680,7 +680,17 @@ check_source_roots() {
       if [ -d "$_v" ]; then
         echo "  [OK]   source '$_s' $_k present ($_v)"
       else
-        echo "  [FAIL] source '$_s' $_k does not exist: $_v"
+        # CLASSIFIED BY WHICH ROOT, because they are owned by different people.
+        # install CREATES the cache root (charon owns it), so a missing one is
+        # drift a re-provision fixes. It deliberately does NOT create the MOUNT:
+        # for PROVIDER=none that is someone else's tree, and an empty directory
+        # where a missing mount belongs is how a dead mount gets mistaken for a
+        # live one. So a missing MOUNT is a fault.
+        if [ "$_k" = CACHE_ROOT ]; then
+          fail_drift "source '$_s' $_k does not exist: $_v"
+        else
+          fail_fault "source '$_s' $_k does not exist: $_v"
+        fi
         _csr=1
       fi
     done
@@ -697,7 +707,7 @@ check_config_sanity() {
     _m=$(source_get "$_s" MOUNT); _c=$(source_get "$_s" CACHE_ROOT)
     [ -n "$_m" ] && [ -n "$_c" ] || continue
     if paths_overlap "$_m" "$_c"; then
-      echo "  [FAIL] source '$_s': MOUNT and CACHE_ROOT are the same tree or"\
+      fail_fault "source '$_s': MOUNT and CACHE_ROOT are the same tree or"\
            "nested ('$_m' vs '$_c')."
       echo "         That reconciles a tree against itself, or caches a tree"\
            "inside itself. Refusing is the only safe answer."
@@ -712,7 +722,7 @@ check_config_sanity() {
     _k=$(profile_source_name "$_p"):$(profile_subtree "$_p")
     [ "$_k" = ":" ] && continue
     if printf '%s\n' "$_keys" | grep -qxF "$_k"; then
-      echo "  [FAIL] more than one profile reconciles '$_k'. Two profiles on"\
+      fail_fault "more than one profile reconciles '$_k'. Two profiles on"\
            "one pair of trees race, each with its own archive."
       _cs=1
     fi
@@ -1113,12 +1123,12 @@ render_timer() {   # <profile>
 # 0 matches / 1 drifted-or-missing. Prints its own marker line.
 check_generated() {   # <label> <live-file> <rendered-tmp>
   if [ ! -f "$2" ]; then
-    echo "  [FAIL] $1 missing (run '${APP_NAME} install')"; return 1
+    fail_drift "$1 missing (run '${APP_NAME} install')"; return 1
   fi
   if diff -q "$3" "$2" >/dev/null 2>&1; then
     echo "  [OK]   $1 matches this version's template"; return 0
   fi
-  echo "  [FAIL] $1 DIFFERS from this version's template (hand-edited, or a"\
+  fail_drift "$1 DIFFERS from this version's template (hand-edited, or a"\
        "stale install); run '${APP_NAME} install'"
   return 1
 }
@@ -1963,7 +1973,7 @@ check_service_template() {
        | grep -q '^charon-sync@\.service'; then
     echo "  [OK]   charon-sync@.service registered"
   else
-    echo "  [FAIL] charon-sync@.service not registered"; _r=1
+    fail_drift "charon-sync@.service not registered"; _r=1
   fi
   check_sweep_units || _r=1
   return $_r
@@ -1983,14 +1993,14 @@ check_sweep_units() {
   if ! sweep_scheduled; then
     for _cso in charon-sweep.timer charon-sweep.service; do
       if [ -e "$SYSTEMD_USER_DIR/$_cso" ]; then
-        echo "  [FAIL] SWEEP=off but $_cso is still installed; it would keep"\
+        fail_drift "SWEEP=off but $_cso is still installed; it would keep"\
              "deleting from the remote (run '${APP_NAME} install')"
         _csr=1
       fi
     done
     if have_systemd \
        && systemctl --user is-enabled charon-sweep.timer >/dev/null 2>&1; then
-      echo "  [FAIL] SWEEP=off but charon-sweep.timer is still ENABLED"
+      fail_drift "SWEEP=off but charon-sweep.timer is still ENABLED"
       _csr=1
     fi
     [ "$_csr" -ne 0 ] \
@@ -2013,7 +2023,7 @@ check_sweep_units() {
   if systemctl --user is-enabled charon-sweep.timer >/dev/null 2>&1; then
     echo "  [OK]   charon-sweep.timer enabled ($(sweep_mode))"
   else
-    echo "  [FAIL] charon-sweep.timer not enabled: orphaned Unison temps will"\
+    fail_drift "charon-sweep.timer not enabled: orphaned Unison temps will"\
          "accumulate unswept (run '${APP_NAME} install')"
     _csr=1
   fi
@@ -2029,7 +2039,7 @@ check_profile_timer() {   # <profile>
   _t="charon-sync-$1.timer"
   if systemctl --user is-enabled "$_t" >/dev/null 2>&1; then
     echo "  [OK]   $_t enabled"
-  else echo "  [FAIL] $_t not enabled"; _ptr=1; fi
+  else fail_drift "$_t not enabled"; _ptr=1; fi
   if systemctl --user is-active "$_t" >/dev/null 2>&1; then
     echo "  [OK]   $_t active"
   else echo "  [WARN] $_t not active"; fi
@@ -2050,7 +2060,7 @@ check_profile_ordering() {   # <profile>
   _df=$(sync_dropin_file "$1")
   if [ -z "$_dw" ]; then
     if [ -f "$_df" ]; then
-      echo "  [FAIL] $1 has an ordering drop-in but draws on no charon-mounted"\
+      fail_drift "$1 has an ordering drop-in but draws on no charon-mounted"\
            "source; run '${APP_NAME} install'"
       _por=1
     else
@@ -2078,15 +2088,20 @@ check_profile_outcome() {   # <profile>
     ok)    echo "  [OK]   $_u last run: success" ;;
     skip)  echo "  [WARN] $_u last run: SKIPPED, $(printf '%s' "$_oc" |
                   cut -d'|' -f3)" ;;
-    *)     echo "  [FAIL] $_u last run: $(printf '%s' "$_oc" | cut -d'|' -f3)"
+    *)     fail_fault "$_u last run: $(printf '%s' "$_oc" | cut -d'|' -f3)"
            report_failed_paths "$1"
            return 1 ;;
   esac
   # A profile can be SUCCEEDING overall and still have paths unison could not
-  # propagate, because unison exits 2 only for a transfer failure. Say so: a
-  # [OK] line above a quietly stuck path is the "presence is not function" trap
-  # in a new place.
-  report_failed_paths "$1"
+  # propagate, because unison exits 2 only for a transfer failure. Say so, and
+  # make it a FAULT rather than a footnote: a green [OK] line above a quietly
+  # stuck path is the "presence is not function" trap in a new place, and until
+  # now this printed the paths while still returning success.
+  if [ -n "$(failed_paths "$1")" ]; then
+    fail_fault "$_u last run SUCCEEDED but paths are still failing"
+    report_failed_paths "$1"
+    return 1
+  fi
   return 0
 }
 
@@ -2115,16 +2130,16 @@ check_profile_prf() {   # <profile>
   _prf=$UNISON_DIR/charon-$1.prf
   _rt=${TMPDIR:-/tmp}/charon-render.$$.$1
   if [ ! -f "$_prf" ]; then
-    echo "  [FAIL] $_prf missing (run '${APP_NAME} install')"; _ppr=1
+    fail_drift "$_prf missing (run '${APP_NAME} install')"; _ppr=1
   elif ! render_prf "$1" >"$_rt" 2>"$_rt.err"; then
-    echo "  [FAIL] charon-$1.prf cannot be RE-RENDERED, so it cannot be"\
+    fail_fault "charon-$1.prf cannot be RE-RENDERED, so it cannot be"\
          "checked. The profile or its source is unresolvable:"
     sed 's/^/           /' "$_rt.err" | head -3
     _ppr=1
   elif diff -q "$_rt" "$_prf" >/dev/null 2>&1; then
     echo "  [OK]   charon-$1.prf matches this version's template"
   else
-    echo "  [FAIL] charon-$1.prf DIFFERS from this version's template"\
+    fail_drift "charon-$1.prf DIFFERS from this version's template"\
          "(hand-patched, or a stale install); run '${APP_NAME} install'"
     _ppr=1
   fi
@@ -2160,7 +2175,7 @@ check_crumbs() {
   # An age charon REFUSES to act on is drift a human must fix, not litter to
   # shrug at: with a bad CRUMB_AGE_MIN nothing is ever swept, silently.
   _cca=$(crumb_age_min) || {
-    echo "  [FAIL] CRUMB_AGE_MIN is not a whole number of minutes; nothing"\
+    fail_fault "CRUMB_AGE_MIN is not a whole number of minutes; nothing"\
          "will ever be swept (fix $CHARON_CONFIG_FILE)"
     return 1; }
   # crumb_tally returns "<count> <bytes>" on one line; splitting it into two
@@ -2189,7 +2204,7 @@ check_notify_seam() {
         then _nok=1; else _nok=; fi ;;
   esac
   if [ -z "$_nok" ]; then
-    echo "  [FAIL] notify seam '$_baked' does NOT resolve on a unit PATH;"\
+    fail_drift "notify seam '$_baked' does NOT resolve on a unit PATH;"\
          "faults raise no flag (re-run install to bake an absolute path)"
     return 1
   fi
@@ -2234,11 +2249,11 @@ do_check() {
   check_config_sanity || _rc=1
   check_source_roots || _rc=1
   if ! have_systemd; then
-    echo "  [FAIL] systemctl not found: charon schedules through systemd"\
+    fail_fault "systemctl not found: charon schedules through systemd"\
          "--user, so nothing here is running automatically."
     echo "         The reconciler config is still valid; drive"\
          "'${APP_NAME%% *} sync' from your own scheduler."
-    return 1
+    return "$EX_FAULT"
   fi
 
   check_service_template || _rc=1
@@ -2252,7 +2267,9 @@ do_check() {
   # refuses to act on is: nothing would ever be swept, and silently.
   check_crumbs || _rc=1
   check_notify_seam || _rc=1
-  return $_rc
+  # The VERDICT, not just "did anything fail". _rc is passed only so a finding
+  # that failed without classifying itself is caught loudly.
+  check_verdict "$_rc"
 }
 
 # SOURCEABLE FOR TESTING. Every test until now drove the whole command against
