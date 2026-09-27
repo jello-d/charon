@@ -89,6 +89,40 @@ source_get() {   # <source> <KEY>
   printf '%s' "$_v"
 }
 
+# --- WHAT IS NEVER CONTENT, named ONCE ---------------------------------------
+# Two classes of path that charon itself creates and that must never be treated
+# as data. They are named here, in the shared preamble, because THREE consumers
+# in two impls need them and every copy is a chance to drift:
+#
+#   the prf     tells unison to ignore them, so a two-way sync neither
+#               propagates nor deletes them
+#   the sweep   deletes the orphaned ones (charon-sync)
+#   the SEED    must not copy them DOWN into the cache (charon-source)
+#
+# That last one was missing until 2026-09-27, and it is why this list exists
+# rather than two literals: `do_seed` ran a bare `rclone copy`, so every sweep
+# and every fresh install pulled the remote's litter into the cache, past the
+# very patterns the prf declares as never-content. Harmless in itself (both ends
+# ignore them) but it is asserted-vs-actual drift, and the moment anyone removes
+# an ignore the litter becomes live data.
+CRUMB_GLOB='.unison.*.unison.tmp'   # unison's transfer temps (a FILE glob)
+PROBE_DIR_NAME=.charon-probe        # the trait probe's scratch (a DIRECTORY)
+
+# The same two facts as rclone filter arguments, for a caller to pass through.
+#
+# EACH CONSUMER RENDERS ITS OWN SYNTAX from the shared names; the names are the
+# single source of truth, not the spelling. rclone's rules are NOT unison's, and
+# the differences were measured 2026-09-27 rather than assumed:
+#   - a pattern with NO leading `/` matches at ANY DEPTH, so the file glob needs
+#     no `**` prefix. Verified at root, one level down and two.
+#   - A DIRECTORY NEEDS `/**` (or a trailing slash). `--exclude .charon-probe`
+#     is read as a FILE pattern and silently excludes NOTHING -- the obvious
+#     spelling is the broken one, which is exactly the sort of exclude that
+#     looks right in a diff and does nothing in production.
+never_content_excludes() {
+  printf '%s\n' "--exclude" "$CRUMB_GLOB" "--exclude" "$PROBE_DIR_NAME/**"
+}
+
 # A CHECK VERDICT SAYS WHETHER AN APPLY WOULD HELP, which is a different
 # question from "is anything wrong" and the only one an integrator can act on.
 #

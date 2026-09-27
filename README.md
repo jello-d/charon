@@ -122,6 +122,10 @@ deletions never to propagate and charon will not guess which side you meant.
 There is deliberately **no working-link key**: charon manages a cache, and
 where a desktop surfaces that cache is layout an integrator owns.
 
+Seeding excludes the paths charon itself creates and never treats as content
+(Unison transfer temps, the trait probe's scratch), so it does not pull charon's
+own litter down into the cache.
+
 `charon sync install` generates a Unison profile + a systemd timer per profile,
 arms a sweep timer for orphaned Unison temps, seeds the priority subtrees
 synchronously, then bulk-seeds the full tree in the background. Installing the

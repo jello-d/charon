@@ -80,14 +80,6 @@ EXAMPLE_CONF="$CHARON_LIBEXEC/../share/charon/example.conf"
 LOCKDIR="$HOME/.cache"
 LOCKFILE="$LOCKDIR/charon-sync.lock"
 
-# Unison's transfer temps, named ONCE. This glob is both the Tier 0 `ignore`
-# the prf template renders and the thing `sweep` deletes, and those two must
-# never be able to disagree: an ignore that does not match what the sweeper
-# looks for would delete live content, and a sweeper that does not match the
-# ignore would leave litter the reconciler has already been told to overlook.
-# Substituted into prf:charon as @CRUMB_GLOB@, so the rendered line is
-# byte-identical to the one it replaced (pinned by test/sweep.t).
-CRUMB_GLOB='.unison.*.unison.tmp'
 # Which paths a profile is currently failing on, per profile. STATE, not cache,
 # for the same reason traits are: this is a record of what a real run observed,
 # and a cleared cache must not silently erase the only evidence of a fault.
@@ -1083,6 +1075,7 @@ render_prf() {   # <profile>
           -e "s|@CACHE_ROOT@|$_croot|g" \
           -e "s|@LABEL@|$_label|g" \
           -e "s|@CRUMB_GLOB@|$CRUMB_GLOB|g" \
+          -e "s|@PROBE_DIR@|$PROBE_DIR_NAME|g" \
           -e "s|@PREFER_NOTE@|$_note|" \
           -e "s|@PREFER@|$_prefer|"
 
@@ -2421,7 +2414,7 @@ copyonconflict = true
 # independently stranded), 54 MB each way. Ignoring them makes the sync blind to
 # its own litter; sweeping it is an out-of-band job.
 ignore = Name @CRUMB_GLOB@
-ignore = Name .charon-probe
+ignore = Name @PROBE_DIR@
 @PREFER_NOTE@
 prefer = @PREFER@
 confirmbigdel = true

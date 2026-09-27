@@ -33,7 +33,10 @@ currently failing on and how long that has been true.
 .TP
 .B charon seed " " [--priority]
 Bulk-populate the cache straight from the source, which is far faster than a
-cold reconcile over a network filesystem.
+cold reconcile over a network filesystem. It excludes the paths charon itself
+creates and never treats as content (Unison transfer temps, the trait probe's
+scratch directory), so a seed does not pull charon's own litter down into the
+cache.
 .TP
 .B charon sweep " " [-n] " " [profile]
 The BACKSTOP sweep of Unison transfer temps
