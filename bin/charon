@@ -7,7 +7,7 @@
 #   charon check  [profile]        audit; 1 drift, 2 fault (see charon(1))
 #   charon status                  sources, profiles, and where things live
 #   charon seed   [--priority]     bulk-populate the cache from the source
-#   charon sweep  [profile]        delete Unison temps orphaned on a replica
+#   charon sweep  [-n] [profile]   delete Unison temps orphaned on a replica
 #   charon install | uninstall     provision (or remove) the units
 #   charon source <list|show|probe|up|down> [name]
 #
@@ -33,9 +33,11 @@ usage: charon <command> [args...]
   check  [profile]     audit; 1 = drift (install fixes it), 2 = fault
   status               sources, profiles, and the artifacts they generate
   seed   [--priority]  bulk-populate the cache straight from the source
-  sweep  [profile]     delete Unison transfer temps orphaned on either replica
+  sweep  [-n] [profile]
+                       delete Unison transfer temps orphaned on either replica
                        (they are never content; see charon(1) for why they
-                       cannot simply be kept off the remote)
+                       cannot simply be kept off the remote). -n shows what it
+                       would remove and deletes nothing.
   install              install the units, profiles, and timers
   uninstall            remove them
   source <list|show|probe|up|down> [name]

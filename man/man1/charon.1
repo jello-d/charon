@@ -35,7 +35,7 @@ currently failing on and how long that has been true.
 Bulk-populate the cache straight from the source, which is far faster than a
 cold reconcile over a network filesystem.
 .TP
-.B charon sweep " " [profile]
+.B charon sweep " " [-n] " " [profile]
 The BACKSTOP sweep of Unison transfer temps
 .RB ( .unison.\| *\| .unison.tmp )
 orphaned on either replica. Normally there is nothing for it to do: each pass
@@ -48,7 +48,11 @@ than
 minutes (default 1440, one day) are removed, because a recent one may be the
 live resume point of an interrupted transfer, and on a shared remote it may
 belong to another machine. Runs under the sync lock and does nothing while a
-pass is in flight. See
+pass is in flight.
+.B -n
+.RB ( --dry-run )
+lists exactly what it would remove and deletes nothing, which is worth doing on
+a tree you have not looked at before. See
 .B ORPHANED TRANSFER TEMPS
 for why they cannot simply be kept off the remote.
 .TP

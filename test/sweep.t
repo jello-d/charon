@@ -207,6 +207,43 @@ do_sweep >/dev/null 2>&1 || fail "do_sweep returned non-zero on a clean sweep"
 [ -e "$REAL" ] || fail "the sweep deleted a real file"
 [ "$(cat "$REAL")" = CONTENT ] || fail "the sweep altered a real file"
 
+# 2c-bis. A DRY RUN LISTS AND DELETES NOTHING. For a verb that removes files
+# from someone's remote on a timer, this is the first thing a cautious user
+# reaches for, and the first thing worth having on a box whose tree you have not
+# looked at. It must report the SAME set the real sweep would take, or it is
+# worse than nothing: a reassurance that does not match the action.
+OLD_D="$T/mnt/Media/.unison.dry run me.psp.aaa999.unison.tmp"
+printf 'xxxx' > "$OLD_D"; touch -d '30 days ago' "$OLD_D"
+_dry=$(do_sweep -n 2>&1); _dryrc=$?
+[ "$_dryrc" = 0 ] || fail "a dry run returned $_dryrc"
+[ -f "$OLD_D" ] \
+  || fail "the DRY RUN deleted a temp; that is the one thing it must never do"
+case $_dry in
+  *"WOULD remove"*"dry run me.psp"*) : ;;
+  *) fail "the dry run did not name what it would remove: $_dry" ;;
+esac
+case $_dry in
+  *"DRY RUN"*"Nothing was deleted"*) : ;;
+  *) fail "the dry run summary does not say nothing happened: $_dry" ;;
+esac
+# --dry-run is the same thing spelled out.
+printf 'xxxx' > "$OLD_D"; touch -d '30 days ago' "$OLD_D"
+do_sweep --dry-run >/dev/null 2>&1 || fail "--dry-run returned non-zero"
+[ -f "$OLD_D" ] || fail "--dry-run deleted a temp"
+# ...and the REAL sweep then takes exactly what the dry run named.
+do_sweep >/dev/null 2>&1 || fail "the real sweep after a dry run failed"
+[ -e "$OLD_D" ] \
+  && fail "the real sweep did NOT remove what the dry run said it would, so the
+  dry run was a reassurance that did not match the action"
+# The age gate applies to a dry run too: it must not promise to remove a fresh
+# temp that the real sweep would leave alone.
+FRESH_D="$T/mnt/Media/.unison.too fresh.psp.bbb888.unison.tmp"
+printf 'y' > "$FRESH_D"
+case "$(do_sweep -n 2>&1)" in
+  *"too fresh.psp"*) fail "the dry run promised to remove a FRESH temp" ;;
+esac
+rm -f "$FRESH_D"
+
 # 2d. IT IS IDEMPOTENT, and says so rather than failing.
 do_sweep >/dev/null 2>&1 || fail "a second do_sweep with nothing to do failed"
 

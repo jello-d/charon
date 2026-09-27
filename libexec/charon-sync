@@ -215,10 +215,12 @@ modes:
   run [profile] sync one profile by name, or all (default)
   seed          bulk-seed the priority subtrees from their sources
   seed-full     bulk-seed the full configured tree into the cache (fast)
-  sweep [prof]  BACKSTOP sweep of Unison transfer temps orphaned on either
+  sweep [-n] [prof]
+                BACKSTOP sweep of Unison transfer temps orphaned on either
                 replica (each pass already cleans up after paths it saw
                 settle). Only temps older than CRUMB_AGE_MIN minutes, since a
-                recent one may be a live resume point.
+                recent one may be a live resume point. -n/--dry-run lists what
+                it would remove and deletes nothing.
   install       install Unison profiles, systemd units/timers, and seed
   uninstall     remove those units/timers/profiles (NOT the cache or config)
   status        what is true now: sources, profiles, last runs, next runs
@@ -1676,7 +1678,14 @@ crumb_tally() {   # [profile]
 
 # Delete them. Under the sync LOCK, because a pass in flight owns its temps and
 # a crumb that is a live resume point must not be pulled out from under it.
-do_sweep() {   # [profile]
+do_sweep() {   # [-n|--dry-run] [profile]
+  # A DRY RUN IS THE FIRST THING A CAUTIOUS USER REACHES FOR, and rightly: this
+  # deletes files from someone's remote on a timer. It is also what you want on
+  # a new box before trusting the age gate on a tree you have not looked at.
+  _swd=
+  case ${1:-} in
+    -n|--dry-run) _swd=1; shift ;;
+  esac
   _swp=${1:-}
   if [ -n "$_swp" ] && [ ! -f "$PROFILES_DIR/$_swp.conf" ]; then
     log_error "unknown profile '$_swp'"; return 1
@@ -1700,7 +1709,12 @@ do_sweep() {   # [profile]
   while IFS= read -r _swc; do
     [ -n "$_swc" ] || continue
     _sws=$(stat -c %s "$_swc" 2>/dev/null) || _sws=0
-    if rm -f -- "$_swc" 2>/dev/null; then
+    if [ -n "$_swd" ]; then
+      # log_warn, not log_info: charon-sync pins LOG_LEVEL 2, and a dry run
+      # whose whole output is suppressed answers the question with silence.
+      log_warn "sweep: WOULD remove $_swc ($_sws bytes)"
+      _swn=$((_swn + 1)); _swb=$((_swb + _sws))
+    elif rm -f -- "$_swc" 2>/dev/null; then
       log_info "sweep: removed $_swc ($_sws bytes)"
       _swn=$((_swn + 1)); _swb=$((_swb + _sws))
     else
@@ -1713,7 +1727,10 @@ do_sweep() {   # [profile]
   rm -f "$_swl"
   flock -u 9 2>/dev/null; exec 9>&-
   if [ "$_swn" -eq 0 ] && [ "$_swf" -eq 0 ]; then
-    log_info "sweep: no orphaned unison temps older than ${_swa}m"
+    log_warn "sweep: no orphaned unison temps older than ${_swa}m"
+  elif [ -n "$_swd" ]; then
+    log_warn "sweep: DRY RUN -- would remove $_swn orphaned unison temp(s),"\
+             "$_swb bytes. Nothing was deleted."
   else
     log_info "sweep: removed $_swn orphaned unison temp(s), $_swb bytes"
   fi
@@ -2377,7 +2394,7 @@ case "$MODE" in
     ;;
   seed)      seed_priority ;;
   seed-full) seed_full ;;
-  sweep)     do_sweep "${2:-}" ;;
+  sweep)     shift; do_sweep "$@" ;;
   install)   do_install ;;
   uninstall) do_uninstall ;;
   config|status) do_status ;;
