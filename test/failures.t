@@ -229,28 +229,96 @@ for rc in 1 2; do
 done
 
 # ----------------------------------------------------------------- part 3 ----
-# SINCE means what it says: it survives an UNCHANGED set and resets on a
-# changed one, because a different set of paths is a new fault rather than a
-# continuation of the old one.
-record_failures docs 2 "$T/out"
-_s1=$(failed_get docs SINCE)
-[ -n "$_s1" ] || fail "no SINCE recorded"
-# Backdate it, then re-record the IDENTICAL set: SINCE must be preserved.
-sed -i "s/^SINCE=.*/SINCE=1000000000/" "$(failed_file docs)"
-record_failures docs 2 "$T/out"
-[ "$(failed_get docs SINCE)" = 1000000000 ] \
-  || fail "SINCE was reset by re-recording an IDENTICAL failure set, so
-  'failing since' would always read as 'just now'"
-# LAST must move even when SINCE does not, or nothing can tell a live fault
-# from a stale record.
+# EACH PATH'S HISTORY IS ITS OWN, and that is the fix for a real defect rather
+# than a refinement. Keying first-seen and the streak on the whole SET meant
+#
+#     pass 1  {A, B}      pass 2  {A, B, C}      pass 3  {A, B}
+#
+# reset both every single time, so a fault whose set SHIFTS -- one path
+# intermittently succeeding, new files arriving in a broken folder -- reported
+# "first seen 0s ago" forever and could NEVER reach the unwedge threshold. The
+# chronic case was both invisible and unfixable.
+_rec() {   # <profile> <path> -> "<streak> <since>", or nothing
+  failed_records "$1" | while IFS= read -r _r; do
+    _k=${_r%% *}; _rest=${_r#* }; _s=${_rest%% *}; _p=${_rest#* }
+    [ "$_p" = "$2" ] || continue
+    printf '%s %s\n' "$_k" "$_s"
+  done
+}
+_streak() { _rec "$1" "$2" | cut -d' ' -f1; }
+_since()  { _rec "$1" "$2" | cut -d' ' -f2; }
+
+rm -rf "$T/state/failed"
+printf 'Failed [alpha.txt]: E\nFailed [beta.txt]: E\n' > "$T/ab"
+record_failures docs 2 "$T/ab"
+[ "$(_streak docs alpha.txt)" = 1 ] || fail "alpha's first sighting is not 1"
+_a1=$(_since docs alpha.txt)
+[ -n "$_a1" ] || fail "no first-seen recorded for alpha.txt"
+
+# The SAME set again: both advance, both keep their first-seen.
+#
+# BACKDATED first, so the assertion does not depend on the clock moving. Within
+# one second a first-seen that is silently RESET is identical to one carried
+# forward, and the first version of this check passed for exactly that reason --
+# measured, by mutation.
+sed -i 's/^FAILED=1 [0-9]* alpha.txt$/FAILED=1 1000000000 alpha.txt/' \
+  "$(failed_file docs)"
+[ "$(_since docs alpha.txt)" = 1000000000 ] || fail "could not backdate alpha"
+_a1=1000000000
+record_failures docs 2 "$T/ab"
+[ "$(_streak docs alpha.txt)" = 2 ] \
+  || fail "alpha's streak did not advance: $(_streak docs alpha.txt)"
+[ "$(_since docs alpha.txt)" = "$_a1" ] \
+  || fail "alpha's first-seen moved while it kept failing: it reads
+  $(_since docs alpha.txt), so a chronic fault would report as brand new"
+
+# THE FLAPPING CASE, and the whole reason for this shape. A THIRD path joins.
+# alpha and beta are unaffected: their history is theirs.
+printf 'Failed [alpha.txt]: E\nFailed [beta.txt]: E\nFailed [gamma.txt]: E\n' \
+  > "$T/abg"
+record_failures docs 2 "$T/abg"
+[ "$(_streak docs alpha.txt)" = 3 ] \
+  || fail "a path JOINING the failure set reset alpha's streak to
+  $(_streak docs alpha.txt). That is the bug: a shifting set meant no path ever
+  accumulated a streak, so nothing was ever unwedged."
+[ "$(_since docs alpha.txt)" = "$_a1" ] \
+  || fail "a path joining reset alpha's first-seen, so a chronic fault would
+  report as brand new forever"
+[ "$(_streak docs gamma.txt)" = 1 ] \
+  || fail "the newly-joined path did not start at 1"
+
+# ...and a path LEAVING is equally none of alpha's business.
+record_failures docs 2 "$T/ab"
+[ "$(_streak docs alpha.txt)" = 4 ] \
+  || fail "a path LEAVING the set reset alpha's streak to
+  $(_streak docs alpha.txt)"
+[ -z "$(_rec docs gamma.txt)" ] \
+  || fail "a path that stopped failing is still in the record; its absence is
+  what settled_paths reads to sweep its temps"
+
+# A path that SETTLES and comes back starts over: its streak measures a
+# CONSECUTIVE run, and it demonstrably synced in between.
+record_failures docs 2 "$T/abg"
+[ "$(_streak docs gamma.txt)" = 1 ] \
+  || fail "a path that settled and returned did not restart its streak"
+
+# LAST moves on every observation, or nothing can tell a live fault from a
+# stale record.
+_l1=$(failed_get docs LAST)
+sed -i "s/^LAST=.*/LAST=1000000000/" "$(failed_file docs)"
+record_failures docs 2 "$T/abg"
 [ "$(failed_get docs LAST)" != 1000000000 ] \
   || fail "LAST did not move on a fresh observation"
-# A DIFFERENT set resets SINCE.
-printf 'Failed [somewhere/else.txt]: Error\n' > "$T/out3"
-record_failures docs 2 "$T/out3"
-[ "$(failed_get docs SINCE)" != 1000000000 ] \
-  || fail "SINCE survived a CHANGED failure set, overstating how long the
-  current fault has been true"
+[ -n "$_l1" ] || fail "no LAST recorded at all"
+
+# A RECORD FROM AN OLDER VERSION had bare paths and no counters. Read it as a
+# first sighting rather than discarding it: an upgrade mid-fault should lose the
+# history, not the fault.
+printf 'LAST=5\nRC=2\nFAILED=legacy path.txt\n' > "$(failed_file docs)"
+[ "$(failed_paths docs)" = 'legacy path.txt' ] \
+  || fail "a pre-counter record was not readable: $(failed_paths docs)"
+[ "$(_streak docs 'legacy path.txt')" = 1 ] \
+  || fail "a pre-counter record did not read as a first sighting"
 
 # ----------------------------------------------------------------- part 4 ----
 # run_teed returns the COMMAND's status, not tee's, and still streams.
@@ -563,26 +631,28 @@ rm -f "$T/bin/unison"
 # to drop the transfer temps for the failing paths: a temp is never content, it
 # is measurably not helping after N tries, and a stranded one is itself enough
 # to cause this error.
+#
+# PER PATH, because the streak is per path. A path reaches the threshold on its
+# own history, whatever its neighbours are doing.
 rm -rf "$T/state/failed"
 : > "$T/canned"
-printf 'Failed [wedged one.psp]: Destination updated during synchronization\n' \
-  >> "$T/canned"
-printf 'Failed [wedged two.png]: Destination updated during synchronization\n' \
-  >> "$T/canned"
+printf 'Failed [wedged one.psp]: Destination updated\n' >> "$T/canned"
+printf 'Failed [wedged two.png]: Destination updated\n' >> "$T/canned"
 mkdir -p "$T/cache/D" "$T/src/D"
 W1="$T/cache/D/.unison.wedged one.psp.dead01.unison.tmp"
 W2="$T/src/D/.unison.wedged two.png.dead02.unison.tmp"
 
-# Passes 1 and 2: the streak builds and NOTHING is touched. Intervening on the
+# Passes 1 and 2: the streaks build and NOTHING is touched. Intervening on the
 # first failure would destroy a live resume point, which is the whole reason
 # this waits.
 printf 'partial' > "$W1"; printf 'partial' > "$W2"
 for n in 1 2; do
   record_failures docs 2 "$T/canned"
-  [ "$(failed_get docs STREAK)" = "$n" ] \
-    || fail "after pass $n the streak reads $(failed_get docs STREAK)"
-  unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
-    >/dev/null 2>&1
+  [ "$(_streak docs 'wedged one.psp')" = "$n" ] \
+    || fail "after pass $n the streak reads $(_streak docs 'wedged one.psp')"
+  [ -z "$(wedged_paths docs 3)" ] \
+    || fail "a path reached the threshold after only $n failure(s)"
+  unwedge_profile docs >/dev/null 2>&1
   [ -f "$W1" ] && [ -f "$W2" ] \
     || fail "the temps were dropped after only $n failure(s); a temp that has
     not had its chances is a live resume point and must be left alone"
@@ -592,16 +662,17 @@ done
 # failure record is untouched (this clears the obstacle, it does not pretend the
 # fault is over).
 record_failures docs 2 "$T/canned"
-[ "$(failed_get docs STREAK)" = 3 ] || fail "the streak did not reach 3"
-_uw=$(unwedge_profile docs "$(failed_get docs STREAK)" \
-        "$(failed_paths docs)" 2>&1)
+[ "$(_streak docs 'wedged one.psp')" = 3 ] || fail "the streak did not reach 3"
+[ "$(wedged_paths docs 3 | wc -l)" = 2 ] \
+  || fail "wedged_paths did not name both paths at the threshold"
+_uw=$(unwedge_profile docs 2>&1)
 [ -e "$W1" ] && fail "the cache-side temp survived the unwedge"
 [ -e "$W2" ] && fail "the mount-side temp survived the unwedge"
 [ -n "$(failed_paths docs)" ] \
   || fail "the unwedge cleared the failure RECORD; it removes the obstacle, it
   does not decide the fault is over -- only a real pass can say that"
 case $_uw in
-  *"3 passes running"*|*"same"*) : ;;
+  *"3 passes running"*) : ;;
   *) fail "the unwedge said nothing a human could act on: $_uw" ;;
 esac
 # It must SAY it is intervening. This deletes from the user's remote on its own
@@ -609,16 +680,76 @@ esac
 printf '%s\n' "$_uw" | grep -q 'wedged one.psp' \
   || fail "the unwedge did not name the paths it acted on: $_uw"
 
-# Pass 4: ONCE per fault. Acting again would be a no-op that logged every pass,
+# Pass 4: ONCE per path. Acting again would be a no-op that logged every pass,
 # and a warning that fires every time is one nobody reads.
 printf 'partial' > "$W1"
 record_failures docs 2 "$T/canned"
-[ "$(failed_get docs STREAK)" = 4 ] || fail "the streak did not reach 4"
-unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
-  >/dev/null 2>&1
+[ "$(_streak docs 'wedged one.psp')" = 4 ] || fail "the streak did not reach 4"
+unwedge_profile docs >/dev/null 2>&1
 [ -f "$W1" ] \
-  || fail "the unwedge fired again past the threshold; it acts once per fault"
+  || fail "the unwedge fired again past the threshold; it acts once per path"
 
+# A PATH THAT SETTLES AND RETURNS starts over, because its streak measures a
+# CONSECUTIVE run and it demonstrably synced in between.
+printf 'Failed [wedged two.png]: Destination updated\n' > "$T/only2"
+record_failures docs 2 "$T/only2"
+record_failures docs 2 "$T/canned"
+[ "$(_streak docs 'wedged one.psp')" = 1 ] \
+  || fail "a path that settled and returned did not restart its streak"
+
+# AND THE FLAPPING CASE REACHES THE THRESHOLD NOW. Under the old set-level
+# counter this sequence could never unwedge anything: the set changes on every
+# pass, so the count reset every pass. 'wedged two.png' fails throughout and
+# must be acted on regardless of what the other path does.
+rm -rf "$T/state/failed"
+printf 'partial' > "$W2"
+printf 'Failed [wedged two.png]: E\nFailed [noise a.txt]: E\n' > "$T/f1"
+printf 'Failed [wedged two.png]: E\n' > "$T/f2"
+printf 'Failed [wedged two.png]: E\nFailed [noise b.txt]: E\n' > "$T/f3"
+for f in "$T/f1" "$T/f2" "$T/f3"; do
+  record_failures docs 2 "$f"
+  unwedge_profile docs >/dev/null 2>&1
+done
+[ "$(_streak docs 'wedged two.png')" = 3 ] \
+  || fail "with the set shifting every pass, the persistent path's streak reads
+  $(_streak docs 'wedged two.png') instead of 3. This is the flapping bug: the
+  chronic fault was invisible and could never be unwedged."
+[ -e "$W2" ] \
+  && fail "the persistent path's temp survived a shifting-set wedge, so the
+  unwedge still cannot reach the one path that is genuinely stuck"
+
+# AN INTERRUPTED PASS MUST NOT ADVANCE IT. This is what makes the streak mean
+# "tried properly and failed again" rather than "was cut short again", and it is
+# what keeps a genuinely resuming large transfer from ever reaching the
+# threshold.
+rm -rf "$T/state/failed"
+record_failures docs 2 "$T/canned"
+_k=$(_streak docs 'wedged one.psp')
+for rc in 3 124 137; do
+  record_failures docs "$rc" "$T/canned"
+  [ "$(_streak docs 'wedged one.psp')" = "$_k" ] \
+    || fail "an interrupted pass (rc $rc) advanced the streak to
+    $(_streak docs 'wedged one.psp'); a resuming transfer would then be
+    unwedged out from under itself"
+done
+
+# THE THRESHOLD IS THE USER'S, and 0 disables the whole thing.
+printf 'UNWEDGE_AFTER=0\n' > "$CFG/charon.conf"
+rm -rf "$T/state/failed"; printf 'partial' > "$W1"; printf 'partial' > "$W2"
+for n in 1 2 3 4 5; do
+  record_failures docs 2 "$T/canned"
+  unwedge_profile docs >/dev/null 2>&1
+done
+[ -f "$W1" ] || fail "UNWEDGE_AFTER=0 did not disable the unwedge"
+printf 'UNWEDGE_AFTER=2\n' > "$CFG/charon.conf"
+rm -rf "$T/state/failed"; printf 'partial' > "$W1"; printf 'partial' > "$W2"
+record_failures docs 2 "$T/canned"
+unwedge_profile docs >/dev/null 2>&1
+[ -f "$W1" ] || fail "UNWEDGE_AFTER=2 fired on the first failure"
+record_failures docs 2 "$T/canned"
+unwedge_profile docs >/dev/null 2>&1
+[ -e "$W1" ] && fail "UNWEDGE_AFTER=2 did not fire on the second failure"
+rm -f "$CFG/charon.conf"
 
 # AND IT MUST NOT CLAIM TO INTERVENE WHEN IT CANNOT. Dropping a temp is the only
 # lever charon has, and it does not fit every wedge: a SCAN failure (an
@@ -628,8 +759,8 @@ unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
 rm -rf "$T/state/failed"
 printf 'Failed [no temp here.psp]: Destination updated\n' > "$T/notemp"
 for n in 1 2 3; do record_failures docs 2 "$T/notemp"; done
-[ "$(failed_get docs STREAK)" = 3 ] || fail "streak setup for the no-temp case"
-_nt=$(unwedge_profile docs 3 "$(failed_paths docs)" 2>&1)
+[ "$(_streak docs 'no temp here.psp')" = 3 ] || fail "no-temp streak setup"
+_nt=$(unwedge_profile docs 2>&1)
 case $_nt in
   *"NOTHING it can do"*) : ;;
   *) fail "with no temps to drop the unwedge still announced an intervention
@@ -643,7 +774,7 @@ esac
 printf 'partial' > "$T/cache/D/.unison.no temp here.psp.f00d.unison.tmp"
 rm -rf "$T/state/failed"
 for n in 1 2 3; do record_failures docs 2 "$T/notemp"; done
-_yt=$(unwedge_profile docs 3 "$(failed_paths docs)" 2>&1)
+_yt=$(unwedge_profile docs 2>&1)
 case $_yt in
   *"dropping 1 transfer temp"*) : ;;
   *) fail "the unwedge did not report HOW MANY temps it dropped: $_yt" ;;
@@ -651,66 +782,40 @@ esac
 [ -e "$T/cache/D/.unison.no temp here.psp.f00d.unison.tmp" ] \
   && fail "the unwedge reported dropping a temp and left it there"
 
-# A CHANGED SET IS A NEW FAULT, so the streak restarts and the clock with it.
-printf 'Failed [something else.txt]: Error\n' > "$T/canned2"
-record_failures docs 2 "$T/canned2"
-[ "$(failed_get docs STREAK)" = 1 ] \
-  || fail "the streak survived a CHANGED failure set: $(failed_get docs STREAK)"
-
-# AN INTERRUPTED PASS MUST NOT ADVANCE IT. This is what makes the streak mean
-# "tried properly and failed again" rather than "was cut short again", and it is
-# what keeps a genuinely resuming large transfer from ever reaching the
-# threshold.
-record_failures docs 2 "$T/canned"
-_k=$(failed_get docs STREAK)
-for rc in 3 124 137; do
-  record_failures docs "$rc" "$T/canned"
-  [ "$(failed_get docs STREAK)" = "$_k" ] \
-    || fail "an interrupted pass (rc $rc) advanced the streak to
-    $(failed_get docs STREAK); a resuming transfer would then be unwedged out
-    from under itself"
-done
-
-# THE THRESHOLD IS THE USER'S, and 0 disables the whole thing.
-printf 'UNWEDGE_AFTER=0\n' > "$CFG/charon.conf"
-rm -rf "$T/state/failed"; printf 'partial' > "$W1"; printf 'partial' > "$W2"
-for n in 1 2 3 4 5; do
-  record_failures docs 2 "$T/canned"
-  unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
-    >/dev/null 2>&1
-done
-[ -f "$W1" ] \
-  || fail "UNWEDGE_AFTER=0 did not disable the unwedge"
-printf 'UNWEDGE_AFTER=2\n' > "$CFG/charon.conf"
-rm -rf "$T/state/failed"; printf 'partial' > "$W1"; printf 'partial' > "$W2"
-record_failures docs 2 "$T/canned"
-unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
-  >/dev/null 2>&1
-[ -f "$W1" ] || fail "UNWEDGE_AFTER=2 fired on the first failure"
-record_failures docs 2 "$T/canned"
-unwedge_profile docs "$(failed_get docs STREAK)" "$(failed_paths docs)" \
-  >/dev/null 2>&1
-[ -e "$W1" ] && fail "UNWEDGE_AFTER=2 did not fire on the second failure"
-rm -f "$CFG/charon.conf"
-
-# The streak reaches the human: a count of paths alone reads as a bad
-# afternoon, where "N passes running" reads as a wedge.
-rm -rf "$T/state/failed"
-record_failures docs 2 "$T/canned"
-case "$(failed_summary docs)" in
+# The summary reports the WORST streak and the OLDEST first-seen, not whichever
+# path happens to be last: a newly-joined path must not reset its story.
+#
+# The record is built DIRECTLY so the worst and oldest are deliberately NOT
+# last. Driving it through record_failures put them last by accident (paths are
+# stored sorted), and a summary that simply took the final record passed --
+# measured, by mutation, twice.
+rm -rf "$T/state/failed"; mkdir -p "$T/state/failed"
+_now=$(date +%s)
+{ printf 'LAST=%s\nRC=2\n' "$_now"
+  printf 'FAILED=9 %s aaa chronic.psp\n' "$((_now - 7200))"
+  printf 'FAILED=1 %s zzz newcomer.txt\n' "$_now"
+} > "$(failed_file docs)"
+_fs=$(failed_summary docs "$_now")
+case $_fs in
+  *"2 path(s) failing"*) : ;;
+  *) fail "the summary miscounted: $_fs" ;;
+esac
+case $_fs in
+  *"worst 9 passes running"*) : ;;
+  *) fail "the summary did not report the WORST streak (9, on the path that is
+     not last); it said: $_fs" ;;
+esac
+case $_fs in
+  *"oldest first seen 2h ago"*) : ;;
+  *) fail "the summary did not report the OLDEST first-seen (2h, on the path
+     that is not last); it said: $_fs" ;;
+esac
+# A lone first sighting says neither: "1 passes running" is noise.
+{ printf 'LAST=%s\nRC=2\n' "$_now"
+  printf 'FAILED=1 %s only.txt\n' "$_now"
+} > "$(failed_file docs)"
+case "$(failed_summary docs "$_now")" in
   *"passes running"*) fail "the summary claims a streak after ONE failure" ;;
-esac
-# human_age already ends in "ago", so the summary must not add a second one.
-# This said "first seen 0s ago ago" until a real run put it in front of me.
-case "$(failed_summary docs)" in
-  *"ago ago"*) fail "the summary doubles 'ago': $(failed_summary docs)" ;;
-  *"first seen"*ago*) : ;;
-  *) fail "the summary lost its age: $(failed_summary docs)" ;;
-esac
-record_failures docs 2 "$T/canned"
-case "$(failed_summary docs)" in
-  *"2 passes running"*) : ;;
-  *) fail "the summary hides the streak: $(failed_summary docs)" ;;
 esac
 
 # ---------------------------------------------------------------- part 12 ----
@@ -732,18 +837,26 @@ _c install >/dev/null 2>&1 || fail "install failed (part 12 setup)"
 _c sync docs >/dev/null 2>&1
 [ -f "$T/cache/D/keep.txt" ] || fail "the part 12 baseline did not populate"
 printf 'content\n' > "$T/src/D/wedge me.psp"
+# A temp planted BEFORE the directory goes read-only, so the intervention has
+# something real to find. Its removal cannot succeed in an unwritable directory
+# and charon says so loudly; part 11 covers the removal itself. What this pins
+# is the TIMING and the per-path counting over real passes.
+printf 'partial' > "$T/cache/D/.unison.wedge me.psp.c0ffee.unison.tmp"
 chmod a-w "$T/cache/D"
 _fired=0
 _at=never
 for n in 1 2 3 4; do
   _e=$(_c sync docs 2>&1 >/dev/null) || :
-  _k=$(failed_get docs STREAK)
+  _k=$(_streak docs 'wedge me.psp')
   if [ "$_k" != "$n" ]; then
     chmod u+w "$T/cache/D"
     fail "after real failing pass $n the streak reads '$_k', not $n"
   fi
+  # Grep the phrase unique to the INTERVENTION, not one the fault summary also
+  # prints: the summary says "worst N passes running" too, so a looser match
+  # would count every pass from 2 up.
   case $_e in
-    *"failed the SAME"*) _fired=$((_fired + 1)); _at=$n ;;
+    *"transfer temp(s) so the next pass"*) _fired=$((_fired + 1)); _at=$n ;;
   esac
 done
 chmod u+w "$T/cache/D"

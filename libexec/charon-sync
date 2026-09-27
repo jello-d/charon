@@ -408,19 +408,63 @@ unison_rc_reported() {   # <rc>
   case "$1" in 0|1|2) return 0 ;; *) return 1 ;; esac
 }
 
+# --- the record, PER PATH ----------------------------------------------------
+# EACH PATH CARRIES ITS OWN first-seen and consecutive-failure count, and that
+# is a correction rather than a refinement. Keying them on the whole SET looked
+# tidier and was wrong in a way that defeated the feature built on top: with
+#
+#     pass 1  {A, B}        pass 2  {A, B, C}        pass 3  {A, B}
+#
+# the set differs every time, so SINCE reset every time and STREAK never left 1.
+# A fault where the set SHIFTS -- one path intermittently succeeding, or new
+# files arriving in a broken folder -- therefore reported "first seen 0s ago"
+# forever and could NEVER reach UNWEDGE_AFTER. The chronic case was both
+# invisible and unfixable, which is the opposite of what the counters are for.
+#
+# The unit of a fault is a PATH. A's history is A's, whatever B does.
+#
+# ON-DISK: one line per failing path, `FAILED=<streak> <since> <path>`. The path
+# is LAST because it may contain spaces (and every name that has ever caused
+# trouble here does); the two counters cannot, so the split is unambiguous.
+failed_records() {   # <profile> -> "<streak> <since> <path>" lines
+  _frf=$(failed_file "$1")
+  [ -f "$_frf" ] || return 0
+  sed -n 's/^FAILED=//p' "$_frf" | while IFS= read -r _fr; do
+    # COMPAT: a record written by a version that stored bare paths has no
+    # counters. Read it as a first sighting rather than discarding it, so an
+    # upgrade mid-fault loses the history instead of losing the fault.
+    case $_fr in
+      [0-9]*' '[0-9]*' '*) printf '%s\n' "$_fr" ;;
+      *) printf '1 0 %s\n' "$_fr" ;;
+    esac
+  done
+}
+
+# Just the paths. The contract every other caller reads.
+failed_paths() {   # <profile>
+  failed_records "$1" | while IFS= read -r _fp; do
+    _fp=${_fp#* }        # drop the streak
+    printf '%s\n' "${_fp#* }"   # drop the since, leaving the path
+  done
+}
+
+# The paths whose OWN streak has just reached <n>. Per path, so a path that has
+# failed enough is acted on whatever its neighbours are doing.
+wedged_paths() {   # <profile> <threshold>
+  failed_records "$1" | while IFS= read -r _wp; do
+    _wk=${_wp%% *}
+    [ "$_wk" = "$2" ] || continue
+    _wp=${_wp#* }
+    printf '%s\n' "${_wp#* }"
+  done
+}
+
 failed_file() { printf '%s/%s' "$FAILED_DIR" "$1"; }
 
 failed_get() {   # <profile> <KEY>
   _fgf=$(failed_file "$1")
   [ -f "$_fgf" ] || return 0
   sed -n "s/^$2=//p" "$_fgf" | head -1
-}
-
-# The paths a profile is currently failing on, one per line.
-failed_paths() {   # <profile>
-  _fpf=$(failed_file "$1")
-  [ -f "$_fpf" ] || return 0
-  sed -n 's/^FAILED=//p' "$_fpf"
 }
 
 # Record what a pass observed. Does NOTHING unless the list can be trusted, so
@@ -459,29 +503,37 @@ record_failures() {   # <profile> <unison-rc> <captured-output>
   fi
   mkdir -p "$FAILED_DIR" 2>/dev/null || return 0
   _rfnow=$(date +%s)
-  # SINCE and STREAK both survive only while the SET is unchanged. A different
-  # set of paths is a NEW fault, not a continuation of the old one: reporting it
-  # as "failing since" the older timestamp would overstate how long this has
-  # been true, and carrying the streak across would count two faults as one.
+  # CARRY EACH PATH'S OWN HISTORY FORWARD. A path still failing keeps its
+  # first-seen and advances its own streak; a path failing for the first time
+  # starts at 1. A path that has STOPPED failing is simply absent from the new
+  # record, which is what settled_paths reads to sweep its temps.
   #
-  # STREAK counts CONSECUTIVE COMPLETED PASSES that reported this identical set.
-  # It only advances when unison reached its own verdict, so an interrupted or
-  # timed-out pass does not count -- which is what makes it a measure of "tried
-  # properly and failed again" rather than "was cut short again".
-  _rfs=$_rfnow
-  _rfk=1
-  if [ "$(failed_paths "$1")" = "$_rfn" ]; then
-    _rfp=$(failed_get "$1" SINCE)
-    case $_rfp in ''|*[!0-9]*) : ;; *) _rfs=$_rfp ;; esac
-    _rfc=$(failed_get "$1" STREAK)
-    case $_rfc in ''|*[!0-9]*) : ;; *) _rfk=$((_rfc + 1)) ;; esac
-  fi
-  { printf 'SINCE=%s\n' "$_rfs"
-    printf 'LAST=%s\n' "$_rfnow"
-    printf 'STREAK=%s\n' "$_rfk"
+  # The streak only advances on a pass where unison reached its own verdict (the
+  # gate above), so it measures "tried properly and failed again" rather than
+  # "was cut short again" -- which is what keeps a genuinely resuming transfer
+  # from ever being unwedged out from under itself.
+  _rfp=$(mktemp) || return 0
+  failed_records "$1" >"$_rfp" 2>/dev/null || : >"$_rfp"
+  _rfo=$(mktemp) || { rm -f "$_rfp"; return 0; }
+  printf '%s\n' "$_rfn" | while IFS= read -r _rfpath; do
+    [ -n "$_rfpath" ] || continue
+    _rfk=1; _rfs=$_rfnow
+    # Match the PATH exactly, not as a pattern: it is a filename.
+    while IFS= read -r _rfrec; do
+      _rfrk=${_rfrec%% *}; _rfrest=${_rfrec#* }
+      _rfrs=${_rfrest%% *}; _rfrp=${_rfrest#* }
+      [ "$_rfrp" = "$_rfpath" ] || continue
+      case $_rfrk in ''|*[!0-9]*) : ;; *) _rfk=$((_rfrk + 1)) ;; esac
+      case $_rfrs in ''|*[!0-9]*|0) : ;; *) _rfs=$_rfrs ;; esac
+      break
+    done <"$_rfp"
+    printf 'FAILED=%s %s %s\n' "$_rfk" "$_rfs" "$_rfpath"
+  done >"$_rfo"
+  { printf 'LAST=%s\n' "$_rfnow"
     printf 'RC=%s\n' "$2"
-    printf '%s\n' "$_rfn" | sed 's/^/FAILED=/'
+    cat "$_rfo"
   } >"$_rff" 2>/dev/null || log_warn "could not record failed paths for '$1'"
+  rm -f "$_rfp" "$_rfo"
   return 0
 }
 
@@ -489,23 +541,40 @@ record_failures() {   # <profile> <unison-rc> <captured-output>
 # fault message, check and status so the three cannot describe the same state
 # three different ways.
 failed_summary() {   # <profile> [now-epoch]
-  _fsp=$(failed_paths "$1")
-  [ -n "$_fsp" ] || return 0
-  _fsc=$(printf '%s\n' "$_fsp" | wc -l | tr -d ' ')
-  _fss=$(failed_get "$1" SINCE)
   _fsn=${2:-$(date +%s)}
-  # The STREAK is the number that tells a reader this is a WEDGE rather than a
-  # bad afternoon: "6 paths failing, 12 passes running" is a different fact from
-  # "6 paths failing" and it is the one the 2026-09-24 incident needed said out
-  # loud. Only shown from 2 up, since "1 passes running" is noise.
-  _fsk=$(failed_get "$1" STREAK)
-  case $_fsk in ''|*[!0-9]*) _fsk= ;; 1) _fsk= ;; esac
+  _fsc=0; _fsk=0; _fss=
+  # WORST AND OLDEST, computed per path. The counters are per-path now, so a
+  # summary has to pick: the LONGEST streak, because that is the one that says
+  # "this is a wedge, not a bad afternoon", and the OLDEST first-seen, because
+  # that is how long the profile has actually been in trouble. Taking either
+  # from a single path would let a newly-joined path reset the whole story --
+  # which is exactly the flapping-set bug, one level up.
+  _fsl=$(mktemp) || return 0
+  failed_records "$1" >"$_fsl"
+  while IFS= read -r _fsr; do
+    [ -n "$_fsr" ] || continue
+    _fsrk=${_fsr%% *}; _fsrest=${_fsr#* }; _fsrs=${_fsrest%% *}
+    _fsc=$((_fsc + 1))
+    case $_fsrk in
+      ''|*[!0-9]*) : ;;
+      *) [ "$_fsrk" -le "$_fsk" ] || _fsk=$_fsrk ;;
+    esac
+    case $_fsrs in
+      ''|*[!0-9]*|0) : ;;
+      *) if [ -z "$_fss" ] || [ "$_fsrs" -lt "$_fss" ]; then _fss=$_fsrs; fi ;;
+    esac
+  done <"$_fsl"
+  rm -f "$_fsl"
+  [ "$_fsc" -gt 0 ] || return 0
   printf '%s path(s) failing' "$_fsc"
-  [ -z "$_fsk" ] || printf ', %s passes running' "$_fsk"
+  # Only from 2 up: "1 passes running" is noise.
+  [ "$_fsk" -lt 2 ] || printf ', worst %s passes running' "$_fsk"
   # human_age ALREADY ends in "ago" (and can say "never" or "in the future"), so
   # this must not add another one. It read "first seen 0s ago ago" until a real
   # run put it in front of me.
-  [ -z "$_fss" ] || printf ', first seen %s' "$(human_age "$_fss" "$_fsn")"
+  [ -n "$_fss" ] \
+    && printf ', oldest first seen %s' "$(human_age "$_fss" "$_fsn")"
+  return 0
 }
 
 #### state, as data ####
@@ -1492,22 +1561,26 @@ sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path> [reason]
 # ONCE PER FAULT, at the moment the streak CROSSES the threshold. Acting on
 # every later pass would be a no-op (the temps are gone) that logged a warning
 # every time, and a warning that fires every time is one nobody reads.
-unwedge_profile() {   # <profile> <streak> <failing paths>
+unwedge_profile() {   # <profile>
   _uwa=$(unwedge_after)
   # The 0 test is DEFENCE IN DEPTH, not load-bearing, and mutation testing says
-  # so honestly: a streak starts at 1 and this only ever compares EQUAL, so 0
-  # could never match anyway. Kept because it states the intent of 0 and would
-  # still hold if the streak ever started counting from zero.
+  # so honestly: a streak starts at 1 and wedged_paths only ever compares EQUAL,
+  # so 0 could never match anyway. Kept because it states the intent of 0 and
+  # would still hold if a streak ever started counting from zero.
   [ "$_uwa" -gt 0 ] || return 0
-  [ "$2" = "$_uwa" ] || return 0
-  [ -n "$3" ] || return 0
+  # PER PATH. It used to take the whole profile's streak and act on every
+  # failing path at once, which meant a single newly-joined path reset the count
+  # for all of them and nothing was ever unwedged. Now each path reaches the
+  # threshold on its own history, and only those are acted on.
+  set -- "$1" "$(wedged_paths "$1" "$_uwa")"
+  [ -n "$2" ] || return 0
   # NAME THE PATHS IN THE WARNING ITSELF. The per-path removals log at INFO, and
   # charon-sync pins LOG_LEVEL=2, so in production those lines are SUPPRESSED --
   # a warning saying only "2 paths" would be charon deleting from someone's
   # remote on its own initiative without saying which files. Bounded to three so
   # a wide fault cannot flood the journal.
-  _uwn=$(printf '%s\n' "$3" | wc -l | tr -d ' ')
-  _uwl=$(printf '%s\n' "$3" | head -3 | tr '\n' ';' | sed 's/;$//')
+  _uwn=$(printf '%s\n' "$2" | wc -l | tr -d ' ')
+  _uwl=$(printf '%s\n' "$2" | head -3 | tr '\n' ';' | sed 's/;$//')
   [ "$_uwn" -le 3 ] || _uwl="$_uwl; ... and $((_uwn - 3)) more"
 
   # COUNT WHAT THERE IS TO DROP BEFORE CLAIMING TO DROP IT. Dropping a temp is
@@ -1520,7 +1593,7 @@ unwedge_profile() {   # <profile> <streak> <failing paths>
   _uwr=$(resolve_profile_roots "$1" 2>/dev/null) || return 0
   _uwm=${_uwr%%|*}; _uwt=${_uwr#*|}; _uwc=${_uwt%%|*}
   _uwf=$(mktemp) || return 0
-  printf '%s\n' "$3" | while IFS= read -r _uwp; do
+  printf '%s\n' "$2" | while IFS= read -r _uwp; do
     [ -n "$_uwp" ] || continue
     path_crumbs "$_uwm" "$_uwp"
     path_crumbs "$_uwc" "$_uwp"
@@ -1529,17 +1602,17 @@ unwedge_profile() {   # <profile> <streak> <failing paths>
   rm -f "$_uwf"
 
   if [ "$_uwk" -eq 0 ]; then
-    log_warn "profile '$1' has failed the SAME $_uwn path(s) $2 passes running"\
-             "and charon has NOTHING it can do: there are no transfer temps to"\
+    log_warn "profile '$1' has $_uwn path(s) failing $_uwa passes running and"\
+             "charon has NOTHING it can do: there are no transfer temps to"\
              "drop, so this is not a stale-temp wedge and it needs a human."\
              "Paths: $_uwl"
     return 0
   fi
-  log_warn "profile '$1' has failed the SAME $_uwn path(s) $2 passes running;"\
+  log_warn "profile '$1' has $_uwn path(s) failing $_uwa passes running;"\
            "dropping $_uwk transfer temp(s) so the next pass starts clean (a"\
-           "temp is never content, and these have had $2 chances to help):"\
+           "temp is never content, and these have had $_uwa chances to help):"\
            "$_uwl"
-  sweep_settled "$1" "$3" unwedge
+  sweep_settled "$1" "$2" unwedge
   return 0
 }
 
@@ -1786,8 +1859,7 @@ run_sync_profile() {
     # A profile that keeps failing the identical way is the fault nothing could
     # clear until now; see unwedge_profile for why dropping the temps is the one
     # safe intervention available.
-    unwedge_profile "$PROFILE" "$(failed_get "$PROFILE" STREAK)" \
-      "$(failed_paths "$PROFILE")"
+    unwedge_profile "$PROFILE"
   fi
 
   if [ $RET -eq 0 ]; then

@@ -124,7 +124,9 @@ after how many CONSECUTIVE identical failures charon tries to unwedge a profile
 itself; 0 disables it. A profile can fail the same propagation on every pass
 indefinitely, because the attempt never succeeds so Unison never commits the
 archive so the next pass repeats it. When the same set of paths has failed this
-many COMPLETED passes running, charon drops those paths' transfer temps so the
+many COMPLETED passes running \(em counted PER PATH, so one path reaches the
+threshold on its own history whatever its neighbours do \(em charon drops those
+paths' transfer temps so the
 next pass starts clean: a stranded temp is itself enough to cause this, a temp
 is never content, and one that has had this many chances has demonstrably not
 helped. Where there is no temp to drop \(em a scan failure has none \(em it says
@@ -379,10 +381,12 @@ the profiles: what to reconcile, and with what policy.
 the MEASURED backend traits each profile is derived from.
 .TP
 .I ~/.local/state/charon/failed/<profile>
-the paths the last completed pass could not propagate, with when that set was
-first seen. Written only from a run that reached its own verdict, so an
-interrupted pass leaves the previous record standing rather than replacing it
-with a partial one. Its absence means the profile is clean.
+the paths the last completed pass could not handle, one per line, each with its
+OWN first-seen and consecutive-failure count. Per path rather than per set,
+because a fault whose set shifts would otherwise reset both on every pass and
+never be recognised as chronic. Written only from a run that reached its own
+verdict, so an interrupted pass leaves the previous record standing rather than
+replacing it with a partial one. Its absence means the profile is clean.
 .TP
 .I ~/.unison/charon-<name>.prf
 the generated Unison profiles.
