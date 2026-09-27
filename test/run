@@ -5,24 +5,76 @@
 # SKIPS ARE COUNTED AND PRINTED: a test that cannot run here (a missing tool it
 # stubs, say) prints `skip ...` as its last line and is counted, so a green run
 # never silently omits coverage.
+#
+# IT REPORTS ITS OWN WALL TIME, and the slowest few tests with it. "Watch the
+# suite's wall time" was a passive note for two weeks, which meant nobody did:
+# the number was only knowable by remembering to wrap the whole thing in `time`,
+# and the note's recorded figure drifted from reality twice. Printing it every
+# run makes growth self-evident and names the test to look at.
+#
+# DELIBERATELY NO TIME BUDGET. A hard threshold false-fails on a slow or loaded
+# machine, and a gate that cries wolf gets padded until it means nothing. The
+# useful thing is visibility, not a verdict: a suite nobody waits for is a suite
+# nobody runs, and that is a judgement for a human with the number in front of
+# them.
 set -eu
 _dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# Milliseconds since the epoch. GNU date gives %N; anything that does not leaves
+# the literal, so fall back to whole seconds rather than reporting nonsense.
+_now_ms() {
+  _nm=$(date +%s%N 2>/dev/null) || _nm=''
+  case $_nm in
+    ''|*[!0-9]*) echo $(( $(date +%s) * 1000 )) ;;
+    *) echo $(( _nm / 1000000 )) ;;
+  esac
+}
+# Whole milliseconds as seconds with one decimal, without floating point.
+_secs() { printf '%d.%ds' $(( $1 / 1000 )) $(( ($1 % 1000) / 100 )); }
 
 _rc=0
 _pass=0
 _skip=0
+_times=$(mktemp) || _times=
+_t0=$(_now_ms)
 for _t in "$_dir"/*.t; do
   [ -f "$_t" ] || continue
+  _s0=$(_now_ms)
   _out=$(sh "$_t" 2>&1) || _rc=1
+  _el=$(( $(_now_ms) - _s0 ))
+  [ -z "$_times" ] || printf '%s %s\n' "$_el" "$(basename "$_t" .t)" >>"$_times"
   printf '%s\n' "$_out"
   case "$(printf '%s\n' "$_out" | tail -n 1)" in
     skip\ *) _skip=$((_skip + 1)) ;;
     ok\ *)   _pass=$((_pass + 1)) ;;
   esac
 done
+_total=$(( $(_now_ms) - _t0 ))
+
+# The timing goes out on FAILURE too: a run that just got much slower and then
+# failed is a different story from one that merely failed, and the reader should
+# not have to re-run it to find that out.
+_report_time() {
+  printf '  ran in %s' "$(_secs "$_total")"
+  if [ -n "$_times" ] && [ -s "$_times" ]; then
+    printf ' · slowest: '
+    sort -rn "$_times" | head -3 | while read -r _ms _name; do
+      # The separator goes BEFORE each entry but not the first, which is what
+      # the flag file is for: a `while read` in a pipeline is a subshell, so a
+      # plain "first time round" variable would not survive between iterations.
+      [ -f "$_times.n" ] && printf ' · '
+      : > "$_times.n"
+      printf '%s %s' "$_name" "$(_secs "$_ms")"
+    done
+    rm -f "$_times.n"
+  fi
+  printf '\n'
+  [ -z "$_times" ] || rm -f "$_times"
+}
 
 if [ "$_rc" -ne 0 ]; then
   echo "charon tests FAILED"
+  _report_time
   exit 1
 fi
 if [ "$_skip" -gt 0 ]; then
@@ -30,4 +82,5 @@ if [ "$_skip" -gt 0 ]; then
 else
   printf 'all charon tests passed (%d)\n' "$_pass"
 fi
+_report_time
 exit 0
