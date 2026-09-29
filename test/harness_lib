@@ -1,4 +1,12 @@
-# test/lib.sh - harness for charon's shell tests (test/*.t), sourced by each.
+# test/harness_lib - harness for charon's shell tests (test/*.t), sourced by
+# each one.
+#
+# NAMED FOR WHAT IT PROVIDES, which is `harness_init` and the assertions around
+# it -- not `lib`, which said only "this is a library" and would have become the
+# absurd `lib_lib` under the naming rule. The `_lib` marker means SOURCED, never
+# executed: test/ holds both kinds (every *.t and `run` are executed), so the
+# marker earns its keep here rather than being noise the directory already
+# implies.
 #
 # Call `harness_init <name>`: sets HERE (the repo root, so a test reaches bin/ +
 # setup.sh), a private scratch dir T (removed on exit), and the pass/fail

@@ -12,7 +12,7 @@
 #
 # A source name is the worse half, because it does not have to be a filename
 # at all: SOURCE=<src>:<subtree> is arbitrary text inside a profile.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init names
 
 export HOME=$T

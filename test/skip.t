@@ -5,7 +5,7 @@
 # profiles in the second it started, which read as "rebuilt" and meant
 # "skipped", and only the missing archive files gave it away. So: an offline
 # remote exits EX_SKIP (75), not 0, and says why at the DEFAULT log level.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init skip
 
 export HOME=$T

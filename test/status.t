@@ -16,7 +16,7 @@
 #      pair each profile reconciles, the cadence, and the last outcome WITH AN
 #      AGE (a bare "OK" cannot distinguish a pass a minute ago from one last
 #      week).
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init status
 
 export HOME=$T

@@ -5,7 +5,7 @@
 # source at all. Until it held, charon-mount read CHARON_REMOTE directly while
 # charon-sync resolved a source, so a declared source would have moved the sync
 # and left the mount behind: one fact in two places, free to drift.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init source-mount
 
 export HOME=$T

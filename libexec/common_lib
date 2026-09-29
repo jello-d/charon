@@ -1,6 +1,18 @@
-# charon/common.sh - shared preamble for the charon pair: charon-mount (owns the
-# rclone FUSE mount) and charon-sync (keeps a local cache in step with it).
-# Sourced early via self-location (../libexec/common.sh); set LOG_LEVEL after.
+# charon/common_lib - shared preamble for the charon impls: charon-mount (owns
+# the rclone FUSE mount), charon-sync (keeps a local cache in step with it) and
+# charon-source (owns the providers and the trait probe).
+#
+# THE `_lib` MARKER MEANS SOURCED, NEVER EXECUTED, and it is a `_` rather than a
+# `-` deliberately: `-` separates words in a name, `_` separates the name from
+# its classifier, so `common_lib` parses as name `common` plus role `lib` while
+# `common-lib` would be ambiguous. That makes the seam machine-checkable -- a
+# rule asserting "everything matching *_lib is sourced, never executed" can be
+# written against `_` and cannot against `-`. It was `common.sh` until
+# 2026-09-29; a language tag says nothing useful about a file whose language is
+# obvious from the directory it sits in, and it would be a lie the day any of
+# this is rewritten.
+#
+# Sourced early via self-location (../libexec/common_lib); set LOG_LEVEL after.
 #
 # The remote name, the mount path, and the local cache are ONE fact each, shared
 # here so a drift cannot make sync a different tree than mount mounts. All

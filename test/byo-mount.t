@@ -12,7 +12,7 @@
 # The mount is made with rclone's on-the-fly :local: remote, which needs no
 # root and no configured remote; charon is told PROVIDER=none, so as far as it
 # is concerned something else entirely owns the tree.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init byo-mount
 
 command -v rclone >/dev/null 2>&1 || skip "rclone not installed"

@@ -14,7 +14,7 @@
 # reported "caught" and the whole sweep read as a clean bill of health. A
 # breakage sweep over a red baseline measures nothing at all, so this refuses to
 # proceed until install and check are both 0.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init scenario
 
 export HOME=$T

@@ -13,16 +13,17 @@
 # logger + CHARON_REMOTE + CHARON_MOUNT, shared with charon-sync (sibling in
 # libexec). Reached via the `charon` dispatcher, or run directly.
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-# Where the sibling impls and common.sh live. Normally alongside this file;
+# Where the sibling impls and common_lib live. Normally alongside this file;
 # CHARON_LIBEXEC overrides it so a unit test can SOURCE this file, where $0 is
 # the test's shell rather than the script and self-location cannot work.
 CHARON_LIBEXEC=${CHARON_LIBEXEC:-$(dirname "$_self")}
-. "$CHARON_LIBEXEC/common.sh" 2>/dev/null || {
-  echo "charon-mount: cannot source common.sh" >&2; exit 1; }
+. "$CHARON_LIBEXEC/common_lib" 2>/dev/null || {
+  echo "charon-mount: cannot source common_lib" >&2; exit 1; }
 
 RCLONE_BIN="${RCLONE_BIN:-rclone}"
 # Resolve the remote and the mountpoint FROM THE SOURCE, not from CHARON_REMOTE
-# directly. Both impls now ask the same resolver (common.sh's source_get), so
+# directly. Both impls now ask the same resolver (common_lib's source_get),
+# so
 # the mount cannot bring up one tree while the sync reconciles another. With no
 # sources.d file the implicit 'default' source derives exactly what
 # CHARON_REMOTE gave before, so this is a no-op for a single-remote install.

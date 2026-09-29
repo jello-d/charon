@@ -19,7 +19,7 @@
 # run_sync_profile() directly: reaching a FAULT through a full pass needs the
 # gate, the lock and a live source to cooperate first, and what matters here is
 # only what the seam is told.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init notify
 
 export CHARON_LIBEXEC=$HERE/libexec

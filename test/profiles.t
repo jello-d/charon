@@ -4,7 +4,7 @@
 # template's baked config -- all from config, with no baked
 # Media/Documents. Runs `charon-sync install` against stubs (no real rclone/
 # unison/systemctl), everything confined to a scratch HOME.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init profiles
 
 export HOME=$T

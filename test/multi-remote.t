@@ -13,7 +13,7 @@
 # instance name from the other. These assertions pin the per-profile ordering
 # drop-in that resolves it, and that it is written for exactly the profiles
 # whose source charon actually mounts.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init multi-remote
 
 export HOME=$T

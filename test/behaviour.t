@@ -13,7 +13,7 @@
 #
 # So these tests do the slow thing: two real trees, a real unison, and
 # assertions about FILES.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init behaviour
 
 command -v unison >/dev/null 2>&1 || skip "unison not installed"

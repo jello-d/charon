@@ -20,7 +20,7 @@
 # Fact 3 is the one worth having in a suite forever: it is the difference
 # between "our config is causing this" and "this is inherent", and getting it
 # wrong sends someone to remove an ignore that is load-bearing.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init sweep
 
 command -v unison >/dev/null 2>&1 || skip "unison not installed"

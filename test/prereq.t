@@ -15,7 +15,7 @@
 # was removed for the apt case and left in place for everybody else.
 #
 # Measured before the fix: unison on PATH and runnable, install exit 3.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init prereq
 
 export HOME=$T

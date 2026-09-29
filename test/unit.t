@@ -10,7 +10,7 @@
 # passing an existence test.
 #
 # These run in milliseconds, so the edge cases can be exhaustive.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init unit
 
 export CHARON_LIBEXEC=$HERE/libexec

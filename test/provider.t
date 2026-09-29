@@ -8,7 +8,7 @@
 # ran `rclone about <global remote>:` unconditionally, so a source with no
 # rclone remote came back offline on EVERY pass and skipped forever. The seam
 # existed; it did not work. A declaration nothing exercises is a promise.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init provider
 
 export HOME=$T

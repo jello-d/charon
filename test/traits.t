@@ -5,7 +5,7 @@
 # ignoreinodenumbers), and every one of them is WRONG for an fstab ext4 or NFS
 # tree -- it would discard real permissions, refuse real symlinks, and ignore
 # stable inodes. Cloud is the special case; a POSIX filesystem is the default.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init traits
 
 export HOME=$T

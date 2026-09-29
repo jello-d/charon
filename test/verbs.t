@@ -7,7 +7,7 @@
 # from a previous install when a renamed charon lands under it. If the old verb
 # were gone, the sync would die at the rename rather than at anything real.
 # So the aliases are a correctness requirement, not politeness.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init verbs
 
 export HOME=$T

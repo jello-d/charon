@@ -29,12 +29,12 @@
 
 : "${LOG_LEVEL:=3}"    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE (environment wins)
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-# Where the sibling impls and common.sh live. Normally alongside this file;
+# Where the sibling impls and common_lib live. Normally alongside this file;
 # CHARON_LIBEXEC overrides it so a unit test can SOURCE this file, where $0 is
 # the test's shell rather than the script and self-location cannot work.
 CHARON_LIBEXEC=${CHARON_LIBEXEC:-$(dirname "$_self")}
-. "$CHARON_LIBEXEC/common.sh" 2>/dev/null || {
-  echo "charon-source: cannot source common.sh" >&2; exit 1; }
+. "$CHARON_LIBEXEC/common_lib" 2>/dev/null || {
+  echo "charon-source: cannot source common_lib" >&2; exit 1; }
 
 PROFILES_DIR="$CHARON_CONFIG/profiles.d"
 
@@ -166,7 +166,7 @@ do_seed() {   # <source> <subtree> <dest>
       # about the prf's Tier 0 ignores, so a bare `rclone copy` pulled the
       # remote's unison temps and probe scratch into the cache on every sweep
       # and every fresh install, straight past the patterns charon itself
-      # declares as never-content. The names come from common.sh so the seed,
+      # declares as never-content. The names come from common_lib so the seed,
       # the prf and the sweep cannot disagree about what is litter.
       #
       # Built into "$@" rather than interpolated: a pattern contains `*` and
@@ -198,7 +198,7 @@ EOF
 # Everything below MEASURES. It writes only inside <mount>/.charon-probe, which
 # is a Tier 0 ignore in every generated profile, so even a failed cleanup can
 # never be mistaken for content and propagated.
-# PROBE_DIR_NAME is in common.sh: the seed excludes it too.
+# PROBE_DIR_NAME is in common_lib: the seed excludes it too.
 
 probe_case() {   # <dir> -> sensitive | insensitive
   printf 'upper\n' > "$1/CharonCase.probe" 2>/dev/null || return 1

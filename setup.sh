@@ -123,8 +123,8 @@ do_check() {
          != "$(readlink -f "$_want" 2>/dev/null)" ]; then
       bad "$_n on PATH is $_got, NOT the installed $_want (shadowed)"
     else ok "$_n present, and PATH resolves to this install"; fi; done
-  if [ -f "$_lib/$PKG/common.sh" ]; then ok "libexec/common.sh installed"
-  else bad "libexec/common.sh missing ($_lib/$PKG/common.sh)"; fi
+  if [ -f "$_lib/$PKG/common_lib" ]; then ok "libexec/common_lib installed"
+  else bad "libexec/common_lib missing ($_lib/$PKG/common_lib)"; fi
   if [ -f "$_shr/$PKG/example.conf" ]; then ok "share example.conf installed"
   else bad "share/example.conf missing ($_shr/$PKG/example.conf)"; fi
   if [ -f "$_shr/$PKG/example-source.conf" ]; then

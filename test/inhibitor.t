@@ -20,7 +20,7 @@
 # directly: the interesting states are the inhibitor's exit code crossed with
 # unison's, and reaching those through a full sync pass would need the gate,
 # the lock and a live source to cooperate first.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init inhibitor
 
 export CHARON_LIBEXEC=$HERE/libexec

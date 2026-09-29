@@ -2,7 +2,7 @@
 # setup.t - the install roundtrip against a scratch PREFIX: install -> assert
 # the ~/.local symlinks (bin, libexec, share, man) land -> check -> bootstrap
 # into an empty profiles.d -> uninstall -> assert gone. Confined to the scratch.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init setup
 
 PREFIX=$T/local
@@ -18,7 +18,8 @@ for _t in "$HERE"/bin/*; do
     || fail "$_n not linked into PREFIX/bin"
 done
 [ -L "$PREFIX/libexec/charon" ] || fail "libexec/charon not linked"
-[ -f "$PREFIX/libexec/charon/common.sh" ] || fail "common.sh not reachable"
+[ -f "$PREFIX/libexec/charon/common_lib" ] \
+  || fail "common_lib not reachable"
 [ -L "$XDG_DATA_HOME/charon" ] || fail "share/charon not linked"
 [ -e "$XDG_DATA_HOME/man/man1/charon.1" ] || fail "man page not installed"
 

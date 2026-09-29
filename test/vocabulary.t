@@ -6,7 +6,7 @@
 # legacy SUBTREE= shorthand keeps working, and a profile that sets NONE of the
 # new knobs renders exactly what it rendered before, so an existing install
 # does not drift the moment this lands.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init vocabulary
 
 export HOME=$T

@@ -8,7 +8,7 @@
 # The guard is ASYMMETRIC and this test pins both halves: source-empty over a
 # populated cache is REFUSED, while source-full over an empty cache is a FIRST
 # SEED and must be allowed, or no new profile could ever populate.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init watchdog
 
 export HOME=$T

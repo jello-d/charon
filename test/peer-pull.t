@@ -23,7 +23,7 @@
 # This was the surface I had written off as "needs ssh and a TTY, accept it
 # untested". It needs neither: ssh is a stub, and the interesting paths are all
 # non-interactive.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init peer-pull
 
 export HOME=$T

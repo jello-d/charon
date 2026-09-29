@@ -74,7 +74,7 @@ case "${1:-}" in
            # Now the two verdicts merge properly: DRIFT wins over FAULT, so a
            # caller that sees 2 knows there is nothing to re-provision.
            #
-           # common.sh is sourced HERE rather than at the top so the merge rule
+           # common_lib is sourced HERE rather than at the top so the merge rule
            # has exactly ONE definition, shared with both impls. Scoped to this
            # branch, which ends in exit, so nothing it defines can reach the
            # commands the other branches exec.
@@ -82,7 +82,7 @@ case "${1:-}" in
            APP_NAME="charon sync" "$_lib/charon-sync" check "$@" || _sc=$?
            APP_NAME="charon mount" "$_lib/charon-mount" check || _mc=$?
            # shellcheck disable=SC1091
-           . "$_lib/common.sh"
+           . "$_lib/common_lib"
            merge_verdict "$_sc" "$_mc" || exit $?
            exit 0 ;;
   status)  shift; _sync config "$@" ;;

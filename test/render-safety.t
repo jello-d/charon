@@ -20,7 +20,7 @@
 # Two independent defects, so two independent fixes, and both are asserted here.
 # The second is the one that matters: it makes ANY render failure non
 # destructive, not just this one.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init render-safety
 
 export CHARON_LIBEXEC=$HERE/libexec

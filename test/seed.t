@@ -13,7 +13,7 @@
 # cache over the authoritative copy -- the single worst thing this project can
 # do, and the failure mode it has spent its whole history guarding against from
 # the other direction.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init seed
 
 export CHARON_LIBEXEC=$HERE/libexec

@@ -17,7 +17,7 @@
 #   2. CRUMB_AGE_MIN is honoured from config, so the TIMED run honours it too --
 #      it used to be env-only and the generated unit baked nothing, so setting
 #      it in a shell changed nothing about what actually ran.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init sweep-config
 
 export CHARON_LIBEXEC=$HERE/libexec

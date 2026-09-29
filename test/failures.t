@@ -17,7 +17,7 @@
 #      and charon's own `timeout` kill gives 124/137. A truncated list recorded
 #      as fact is how the cleanup built on top of this could delete a temp that
 #      a resume still needs, so the guard is asserted from both sides.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init failures
 
 export CHARON_LIBEXEC=$HERE/libexec
@@ -53,6 +53,12 @@ _self=$HERE/libexec/charon-sync
 # ----------------------------------------------------------------- part 1 ----
 # THE PARSE. The sample is unison's real wording, captured from unison 2.53.8
 # under the exact flags charon uses (-batch -auto -ui text -silent).
+# tabs-are-data: a byte-level unison transcript, reproduced exactly.
+# THE TWO TAB-INDENTED LINES BELOW ARE DATA, NOT INDENTATION. unison really
+# does indent those two paths with a literal tab, and this sample is a
+# byte-level reproduction of its output -- retabbing them to spaces would
+# falsify the very thing the parse is being tested against. The house rule is 2
+# spaces and no tabs; a captured transcript is not source formatting.
 cat > "$T/out" <<'EOF'
 Warning: No archive files were found for these roots, whose canonical names are:
 	/tmp/x/L
