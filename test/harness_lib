@@ -2,7 +2,7 @@
 # each one.
 #
 # NAMED FOR WHAT IT PROVIDES, which is `harness_init` and the assertions around
-# it -- not `lib`, which said only "this is a library" and would have become the
+# it, not `lib`, which said only "this is a library" and would have become the
 # absurd `lib_lib` under the naming rule. The `_lib` marker means SOURCED, never
 # executed: test/ holds both kinds (every *.t and `run` are executed), so the
 # marker earns its keep here rather than being noise the directory already
@@ -30,7 +30,7 @@ skip() { printf 'skip %s (%s)\n' "$TEST_NAME" "$1"; exit 0; }
 # systemd-inhibit that was really the REAL one being GRANTED by a seated
 # session. Both tests passed while asserting the opposite of their claim.
 #
-# It also refuses to return a PATH that fails the OTHER way -- an empty PATH
+# It also refuses to return a PATH that fails the OTHER way: an empty PATH
 # would make a case die on a missing dirname before reaching the code under
 # test. So: mirror the bin dirs WHOLESALE minus the named tools, and FAIL
 # LOUDLY if any is still reachable, or was never there to begin with.

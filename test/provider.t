@@ -4,7 +4,7 @@
 #
 # This is the test the docs were writing cheques for. The config vocabulary
 # accepted PROVIDER=none and the example file promised such a source "still
-# reconciles, still gates, still refuses a source gone empty" -- but the gate
+# reconciles, still gates, still refuses a source gone empty", but the gate
 # ran `rclone about <global remote>:` unconditionally, so a source with no
 # rclone remote came back offline on EVERY pass and skipped forever. The seam
 # existed; it did not work. A declaration nothing exercises is a promise.
@@ -129,7 +129,7 @@ _c check 2>&1 | grep -qi 'config is coherent' \
 # install deliberately writes no mount template when no source is rclone-backed,
 # while check demanded one anyway, so a PROVIDER=none-only box exited 0 from
 # install and 1 from check with nothing a user could do. An integrator
-# delegating its verdict to `charon check` -- the contract -- would show
+# delegating its verdict to `charon check` (the contract) would show
 # permanent drift on a feature charon advertises.
 out=$(_c check 2>&1); rc=$?
 [ "$rc" = 0 ] || fail "a healthy BYO-only install cannot PASS check (rc=$rc):

@@ -4,13 +4,13 @@
 # THE DEFECT THIS PINS (found 2026-09-17). charon needs exactly one privileged
 # thing: apt-installing unison when it is ABSENT. A sudo gate was added for
 # that, because demanding privilege unconditionally made `charon install`
-# unrunnable from any non-TTY context -- an agent shell, a non-interactive ssh,
-# a unit -- on a box that needed none, and turned every routine prf
+# unrunnable from any non-TTY context (an agent shell, a non-interactive ssh,
+# a unit) on a box that needed none, and turned every routine prf
 # regeneration into a sudo handoff.
 #
 # But the gate asked `dpkg -l | grep '^ii  unison '`, which is not the question.
 # The need is that unison is RUNNABLE. A unison built from source, or from nix
-# or brew, or in /usr/local/bin, is invisible to dpkg -- so charon called it
+# or brew, or in /usr/local/bin, is invisible to dpkg, so charon called it
 # absent, demanded sudo it did not need, and exited 3. The false prerequisite
 # was removed for the apt case and left in place for everybody else.
 #
@@ -82,7 +82,7 @@ out=$(_c install 2>&1); rc=$?
 # REMOVING THE STUB IS NOT ENOUGH: this box HAS a real /usr/bin/unison (that is
 # how behaviour.t runs), so deleting $T/bin/unison leaves it perfectly
 # reachable. The first version of this case did exactly that and "passed" while
-# unison was present the whole time -- the THIRD time this trap caught me in one
+# unison was present the whole time, the THIRD time this trap caught me in one
 # session, which is why path_without exists and asserts its own honesty.
 rm -f "$T/bin/unison"
 rm -rf "$T/uni" "$T/xdg"

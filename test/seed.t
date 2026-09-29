@@ -10,7 +10,7 @@
 # letting install fire a background seed is "it CANNOT write the remote, because
 # the direction is remote -> cache". That is an argument about an argv, and
 # nothing checked the argv. A transposition there would upload a half-empty
-# cache over the authoritative copy -- the single worst thing this project can
+# cache over the authoritative copy, the single worst thing this project can
 # do, and the failure mode it has spent its whole history guarding against from
 # the other direction.
 . "$(dirname "$0")/harness_lib"
@@ -158,7 +158,7 @@ printf '%s\n' "$_c" | grep -q 'gd:Media' \
 
 # ...and it kicks the reconcile SEQUENTIALLY, never --no-block. All profiles
 # share ONE sync lock, so firing them all at once guaranteed every profile after
-# the first hit the lock and recorded a SKIPPED run -- a warning after every
+# the first hit the lock and recorded a SKIPPED run, a warning after every
 # single install, which is a warning nobody reads.
 grep -q 'no-block' "$T/systemctl.log" \
   && fail "seed_full kicked the syncs with --no-block; they contend on one lock
@@ -203,7 +203,7 @@ seed_profile byo Files || fail "a PROVIDER=none seed was reported as a FAILURE"
 
 # --- AND THOSE PATTERNS REALLY DO EXCLUDE, against REAL rclone ---------------
 # The assertions above prove the flags are PASSED. They cannot prove the flags
-# WORK, and rclone's filter rules are not unison's -- which is the whole reason
+# WORK, and rclone's filter rules are not unison's, which is the whole reason
 # this needed measuring rather than assuming. A pattern that looks right
 # and excludes nothing is the exact failure mode here, so the semantics get a
 # behavioural test of their own.
@@ -215,7 +215,8 @@ seed_profile byo Files || fail "a PROVIDER=none seed was reported as a FAILURE"
 # THE REAL BINARY IS RESOLVED BY PATH SEARCH, NOT `command -v`. This file puts
 # its own rclone STUB first on PATH, so `command -v rclone` finds the STUB, and
 # the first version of this test "measured" rclone's filter semantics against a
-# script that copies nothing -- it duly reported that the excludes had eaten all
+# script that copies nothing, and it duly reported that the excludes had eaten
+# all
 # the content. Same family as the rule that removing a stub does not simulate an
 # absent tool, pointed the other way: here the stub is the thing to avoid.
 _realrclone=

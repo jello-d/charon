@@ -1,12 +1,12 @@
 #!/bin/sh
 # status.t - the HUMAN view: it must never fail, never write, and still answer.
 #
-# `charon status` is deliberately not a verdict -- `check` is that. status
+# `charon status` is deliberately not a verdict; `check` is that. status
 # exists to be read, so its contract is unusual and worth pinning explicitly:
 #
 #   1. IT NEVER WRITES. Traits are measured by a PROBE, and a probe writes into
 #      the source. status must not probe, or merely looking at a Drive-backed
-#      cache would put files on the remote -- the exact incidental-write class
+#      cache would put files on the remote, the exact incidental-write class
 #      this project spent its history removing.
 #   2. IT NEVER FAILS. A human runs it precisely when something is wrong, so
 #      exiting non-zero on a broken config would make the diagnostic unusable at
@@ -61,7 +61,7 @@ _c() {
     UNISON_DIR=$T/uni sh "$HERE/bin/charon" "$@"
 }
 # A fingerprint of everything under the source: names, sizes and mtimes. If
-# status writes ANYTHING -- a probe file, a touched mtime -- this moves.
+# status writes ANYTHING (a probe file, a touched mtime) this moves.
 _fp() { find "$T/mnt" -printf '%p %s %T@\n' 2>/dev/null | sort | md5sum; }
 
 _c install >/dev/null 2>&1 || fail "install failed (status test setup)"

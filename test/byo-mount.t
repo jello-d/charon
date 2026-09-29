@@ -3,7 +3,7 @@
 # the fstab / autofs / NFS case, as opposed to a plain directory.
 #
 # provider.t covers a plain directory, and that is NOT the same test. The two
-# differ at exactly the place that matters -- `mountpoint -q` -- and the
+# differ at exactly the place that matters (`mountpoint -q`) and the
 # dangerous real-world failure is one a directory cannot simulate at all: the
 # mount GOING AWAY underneath charon, leaving an empty directory where a full
 # tree was. Under a two-way sync that reads as "everything was deleted", and
@@ -87,7 +87,7 @@ _c source status nas >/dev/null 2>&1 \
   && fail "an unmounted BYO source still reported UP (it is an empty dir now)"
 
 # It must be a FAULT, not a skip. A skip raises no flag and marks the unit
-# successful, so a permanently vanished mount would quietly stop syncing -- and
+# successful, so a permanently vanished mount would quietly stop syncing, and
 # unlike a network blip, a gone mount does not come back by itself.
 out=$(_c sync docs 2>&1); rc=$?
 [ "$rc" = 0 ] && fail "synced against a vanished mount ($out)" || :

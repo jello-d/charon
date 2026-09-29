@@ -3,7 +3,7 @@
 # them. This is a correctness prerequisite, not tidiness: the old template
 # hardcoded cloud assumptions (`fat` = perms 0, dontchmod, links false,
 # ignoreinodenumbers), and every one of them is WRONG for an fstab ext4 or NFS
-# tree -- it would discard real permissions, refuse real symlinks, and ignore
+# tree: it would discard real permissions, refuse real symlinks, and ignore
 # stable inodes. Cloud is the special case; a POSIX filesystem is the default.
 . "$(dirname "$0")/harness_lib"
 harness_init traits

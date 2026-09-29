@@ -11,7 +11,7 @@
 #   MULTI-LINE. render_sync_unit feeds that to sed as a replacement, a
 #   multi-line sed replacement is an ERROR ("unterminated `s' command"), sed
 #   produced nothing, and install -- which redirected the renderer straight at
-#   the unit file -- left charon-sync@.service ZERO BYTES.
+#   the unit file, left charon-sync@.service ZERO BYTES.
 #
 # Latent until then only because charon-sync pins LOG_LEVEL=2, so log_info was
 # suppressed and nobody had installed at a higher level. Anyone debugging with
@@ -75,7 +75,7 @@ printf 'the working version\n' > "$LIVE"
 # Every failure mode is checked for a leftover temp IMMEDIATELY, not at the end:
 # consecutive calls in one process reuse the same $$ temp name, so a later call
 # cleans up an earlier call's leftover and the assertion cannot see it. Found by
-# mutation -- dropping the rm on the failure path survived a check done later.
+# mutation: dropping the rm on the failure path survived a check done later.
 _no_temp() {   # <what just happened>
   [ -z "$(find "$T" -maxdepth 1 -name '*.charon-new.*' 2>/dev/null)" ] \
     || fail "install_artifact left its temp behind after $1:
@@ -92,8 +92,8 @@ install_artifact "$LIVE" _boom \
 _no_temp "a failed render"
 
 # A renderer that FAILS having already written SOME output. Only the exit
-# STATUS can catch this one -- the output is non-empty, so the size check
-# passes it -- and it is the realistic shape: sed emitting several lines and
+# STATUS can catch this one: the output is non-empty, so the size check
+# passes it, and it is the realistic shape: sed emitting several lines and
 # then erroring leaves exactly this.
 _partial() { printf 'half a unit\n'; return 4; }
 install_artifact "$LIVE" _partial \
@@ -104,7 +104,7 @@ install_artifact "$LIVE" _partial \
 _no_temp "a partial render"
 
 # A renderer that SUCCEEDS but emits nothing. Only the size check can catch
-# this one -- sed exits 0 in some failure modes and simply prints nothing -- so
+# this one: sed exits 0 in some failure modes and simply prints nothing, so
 # an exit status alone is not enough to trust.
 _empty() { return 0; }
 install_artifact "$LIVE" _empty \
@@ -169,8 +169,8 @@ done
 # A GENUINE RENDER FAILURE DURING A REAL INSTALL must leave the WORKING unit in
 # place. Induced honestly rather than by stubbing: render_sync_unit substitutes
 # with `sed -e "s|@CHARON_NOTIFY@|$1|g"`, so a notify path containing sed's own
-# delimiter breaks the expression. That is also a real (if narrow) edge -- a
-# filename may contain '|' -- and the right behaviour for it is exactly the
+# delimiter breaks the expression. That is also a real (if narrow) edge: a
+# filename may contain '|', and the right behaviour for it is exactly the
 # right behaviour for any render failure.
 cp "$SVC" "$T/known-good"
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/pipe|notifier"

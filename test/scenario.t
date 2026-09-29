@@ -29,7 +29,7 @@ echo content > "$T/cache/Docs/a.txt"
 
 # A systemd model faithful enough that check's questions are ANSWERABLE. A stub
 # that exits 0 and prints nothing makes check fail for reasons unrelated to
-# charon, and then nobody asserts the verdict -- which is exactly how the
+# charon, and then nobody asserts the verdict, which is exactly how the
 # BYO-only defect hid inside provider.t for as long as it did.
 cat > "$T/bin/systemctl" <<'STUB'
 #!/bin/sh
@@ -65,7 +65,7 @@ case "${1:-}" in
   # just no longer armed, which is exactly the state being tested.
   # The RESULT MUST REACH THE CALLER. The unconditional `exit 0` this stub
   # ended with discarded it, so is-enabled answered "yes" forever and "the timer
-  # disabled" was undetectable -- the stub, not charon, was the reason.
+  # disabled" was undetectable: the stub, not charon, was the reason.
   is-enabled|is-active) [ -L "$W/$2" ] || rc=1 ;;
   list-unit-files)
     pat=${2:-}
@@ -134,7 +134,8 @@ _c check >/dev/null 2>&1;   _k=$?
 $(_c check 2>&1 | grep -v '\[OK\]')"
 
 # Every breakage: apply, require check to FAIL, restore, require check GREEN
-# again. The restore assertion matters as much as the catch -- a check that
+# again. The restore assertion matters as much as the catch, because a check
+# that
 # latches on and never recovers is unusable, and an un-restored breakage would
 # make every later case pass for free.
 _n=0
@@ -209,7 +210,7 @@ brk "the notify seam configured but unreachable" \
 
 # Traits deleted: check must FAIL, and must say WHAT TO DO. The prf is DERIVED
 # from measured traits, so without them it cannot be re-rendered and therefore
-# cannot be verified -- which is the intended design ("probe -> check FAILs ->
+# cannot be verified, which is the intended design ("probe -> check FAILs ->
 # install"), not a gap. I first wrote this case asserting the OPPOSITE, on a
 # misreading of the no-migration-cliff guarantee: that guarantee is that a SYNC
 # keeps running on its existing prf, not that check stays quiet.

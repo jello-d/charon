@@ -48,7 +48,8 @@ _reset() {
 
 #### DELETE=propagate: the default really does mirror a deletion ####
 # Several files on purpose. Removing the ONLY file empties the replica, which
-# confirmbigdel refuses -- correct, but it tests the safety net rather than the
+# confirmbigdel refuses, which is correct, but it tests the safety net rather
+# than the
 # delete policy. That is asserted separately below.
 _reset
 printf 'SOURCE=s:D\n' > "$CFG/profiles.d/docs.conf"
@@ -93,8 +94,8 @@ _c sync docs >/dev/null 2>&1; _rc1=$?
 # MEASURED behaviour, and the docs said otherwise until this test was written:
 # nodeletion does not restore the missing copy. It makes the path an
 # unresolved conflict, and the profile FAULTS until a human settles it. That
-# is defensible -- you asked for deletions never to propagate, so charon will
-# not guess which side you meant -- but it must be documented as what it is.
+# is defensible (you asked for deletions never to propagate, so charon will
+# not guess which side you meant) but it must be documented as what it is.
 [ "$_rc1" = 0 ] \
   && fail "DELETE=never silently accepted a deletion it was told to refuse" || :
 _c sync docs >/dev/null 2>&1 \
@@ -122,7 +123,7 @@ _sync
 #### CONFLICT: who wins, and WHERE the losing copy lands ####
 # The second question matters as much as the first. copyonconflict keeps the
 # overwritten version, and which SIDE it lands on decides whether resolving a
-# conflict quietly writes to the remote -- the thing this project exists to
+# conflict quietly writes to the remote, the thing this project exists to
 # avoid. The docs make specific claims here; these assert them.
 _conflict_setup() {   # <CONFLICT value>
   _reset

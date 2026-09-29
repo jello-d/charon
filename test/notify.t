@@ -70,7 +70,7 @@ _reset; CHARON_NOTIFY=no-such-notifier-anywhere
 # CAPTURE TO FILES, not $( ): the once-only guard is a shell variable, and a
 # command substitution runs in a SUBSHELL, so each capture would get a fresh
 # copy and the warning would "repeat" no matter what charon does. The first
-# version of this case failed for exactly that reason -- the harness broke the
+# version of this case failed for exactly that reason: the harness broke the
 # mechanism it was testing.
 notify flag charon-docs-sync "a fault" 2>"$T/w1"
 grep -qi 'not on PATH' "$T/w1" \

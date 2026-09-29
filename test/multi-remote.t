@@ -27,7 +27,7 @@ mkdir -p "$T/bin" "$CFG/profiles.d" "$CFG/sources.d" "$SD" \
 
 # A systemd model faithful to the ONE behaviour this test turns on: `enable`
 # creates a symlink under default.target.wants, and `list-unit-files` reports
-# UNIT FILES ONLY -- so a template INSTANCE never appears there, only the
+# UNIT FILES ONLY, so a template INSTANCE never appears there, only the
 # template itself. The first version of this stub listed enabled instances as
 # though they were unit files, which is NOT what systemd does, and it made two
 # real bugs pass: the orphan check and uninstall both enumerated instances that

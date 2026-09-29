@@ -22,7 +22,7 @@
 #   INTERVAL=30m BOOT=12m JITTER=5m   unison timer cadence
 #   SEED_PRIORITY=Media/Images/wallpaper  bulk-seeded FIRST, at install
 #   SEED_FULL_ORDER=20          join the background full seed, ascending
-#   -- the three TIER 1 policy knobs, charon's own vocabulary: --
+#   The three TIER 1 policy knobs, charon's own vocabulary:
 #   IGNORE=*.tmp                exclude; repeatable. A value with '/' is a path
 #                               from the root, otherwise a name at any depth
 #   CONFLICT=remote|local|newer which side wins when both changed (def remote)
@@ -162,7 +162,7 @@ crumb_age_min() {
 # A SKIPPED pass is neither a success nor a fault, and conflating it with
 # success cost real time: a detached archive rebuild reported `documents EXIT=0`
 # and `media EXIT=0` in the SAME SECOND it started, which reads as "rebuilt" and
-# actually meant "did nothing" -- only the absence of archive files gave it
+# actually meant "did nothing": only the absence of archive files gave it
 # away. So a skip now carries its OWN exit status. 75 is EX_TEMPFAIL: try again
 # later, which is exactly what a timer does. The generated unit marks 75 a
 # success for systemd (SuccessExitStatus), because an offline laptop must not
@@ -363,7 +363,7 @@ extract_section() {
 #
 #  1. PROPAGATION failure, exit 2:   Failed [<relative path>]: <reason>
 #     The path is BRACKETED, which is the only reason a name containing spaces
-#     can be recovered -- and every name that has ever caused trouble in this
+#     can be recovered, and every name that has ever caused trouble in this
 #     project has had spaces. Greedy capture, so a path containing ']' survives;
 #     no unison reason contains ']: '.
 #
@@ -395,7 +395,7 @@ parse_unison_failures() {   # <captured-output-file>
 # files skipped but transfers fine, 2 non-fatal transfer failures, 3 fatal error
 # OR EXECUTION INTERRUPTED. Only 0-2 mean it finished reconciling and reported
 # everything it found. A 3, or charon's own `timeout` kill (124/137), leaves a
-# TRUNCATED list -- and a truncated list read as "these paths are fine now" is
+# TRUNCATED list, and a truncated list read as "these paths are fine now" is
 # the one way the machinery built on this parse could destroy something, because
 # a temp still needed for a resume would look settled.
 unison_rc_reported() {   # <rc>
@@ -410,8 +410,8 @@ unison_rc_reported() {   # <rc>
 #     pass 1  {A, B}        pass 2  {A, B, C}        pass 3  {A, B}
 #
 # the set differs every time, so SINCE reset every time and STREAK never left 1.
-# A fault where the set SHIFTS -- one path intermittently succeeding, or new
-# files arriving in a broken folder -- therefore reported "first seen 0s ago"
+# A fault where the set SHIFTS (one path intermittently succeeding, or new
+# files arriving in a broken folder) therefore reported "first seen 0s ago"
 # forever and could NEVER reach UNWEDGE_AFTER. The chronic case was both
 # invisible and unfixable, which is the opposite of what the counters are for.
 #
@@ -481,14 +481,14 @@ record_failures() {   # <profile> <unison-rc> <captured-output>
     fi
     # UNISON SAYS SOMETHING FAILED AND charon CANNOT NAME IT. "I parsed no
     # paths" is NOT "nothing is failing", and treating it as such used to WIPE
-    # the record -- including a streak that was about to unwedge a real fault.
+    # the record, including a streak that was about to unwedge a real fault.
     #
     # This is a live blind spot, not a hypothetical one: unison reports a
     # PROPAGATION failure as `Failed [path]: reason` and exits 2, but a SCAN or
     # digest failure (an unreadable source file, say) is worded differently and
     # exits 1. Measured 2026-09-26. So the record is LEFT ALONE and the gap is
     # said out loud, which is the only honest thing to do about output charon
-    # does not understand -- silence here would have hidden the whole class.
+    # does not understand, and silence here would have hidden the whole class.
     log_warn "profile '$1': unison exited $2 but charon could not attribute it"\
              "to any path (it reports propagation failures as 'Failed"\
              "[path]:'; a scan or digest error is worded otherwise). Keeping"\
@@ -504,7 +504,7 @@ record_failures() {   # <profile> <unison-rc> <captured-output>
   #
   # The streak only advances on a pass where unison reached its own verdict (the
   # gate above), so it measures "tried properly and failed again" rather than
-  # "was cut short again" -- which is what keeps a genuinely resuming transfer
+  # "was cut short again", which is what keeps a genuinely resuming transfer
   # from ever being unwedged out from under itself.
   _rfp=$(mktemp) || return 0
   failed_records "$1" >"$_rfp" 2>/dev/null || : >"$_rfp"
@@ -574,7 +574,7 @@ failed_summary() {   # <profile> [now-epoch]
 #### state, as data ####
 # These answer "what is true" and return it as DATA; the callers decide how to
 # say it. check and status both need the last-run outcome, and until now check
-# computed it inline -- so status could not show it without a second copy of
+# computed it inline, so status could not show it without a second copy of
 # the logic, and the two could disagree about the same fact.
 
 # <epoch> [now] -> "never" | "42s ago" | "7m ago" | "3h ago" | "2d ago"
@@ -647,7 +647,7 @@ duration_secs() {
 # Computed from LastTriggerUSec (a WALL-CLOCK timestamp) plus the configured
 # interval, deliberately. systemd exposes the real answer only as
 # NextElapseUSecMonotonic, and that is CLOCK_MONOTONIC, which EXCLUDES
-# suspend -- while /proc/uptime includes it. On this laptop the two differ
+# suspend, while /proc/uptime includes it. On this laptop the two differ
 # by over ten hours, so comparing them called every healthy timer overdue.
 # No portable shell reads CLOCK_MONOTONIC, so charon uses the clock it can
 # read and SAYS the answer is approximate. RandomizedDelaySec makes it
@@ -730,7 +730,7 @@ ensure_cache_roots() {
 
 # Do the two trees a source names actually EXIST. Nothing asserted this, and a
 # missing cache root changes no generated artifact, so every diff-based check
-# stayed green while the cache was simply gone -- fully installed, fully broken.
+# stayed green while the cache was simply gone: fully installed, fully broken.
 # (A wrong MOUNT was caught only incidentally, because it changes the rendered
 # prf; deleting the cache changes nothing that gets rendered.)
 #
@@ -778,7 +778,7 @@ check_config_sanity() {
     fi
   done
   # Two profiles reconciling the SAME pair would run two unison profiles, each
-  # with its own archive, over one pair of trees -- they fight, and which wins
+  # with its own archive, over one pair of trees, so they fight, and which wins
   # depends on timer jitter.
   _keys=
   for _p in $(profile_names); do
@@ -811,7 +811,7 @@ check_if_mounted() {
 # This used to run `rclone about <global remote>:` itself. That made the gate
 # rclone-only and install-global: a PROVIDER=none source (fstab, automount, a
 # plain directory) was probed against an rclone remote it does not have, came
-# back "offline" on EVERY pass, and skipped forever -- while the docs promised
+# back "offline" on EVERY pass, and skipped forever, while the docs promised
 # it still reconciled. The sync must not know how a source is realised.
 source_health() {   # <source>
   "$CHARON_LIBEXEC/charon-source" health "$1" >/dev/null 2>&1
@@ -915,7 +915,7 @@ check_install_prereqs() {
 # unison_present: is the reconciler RUNNABLE. That is the only thing charon
 # needs, and it is NOT the same question as "is unison a dpkg package", which is
 # what both of these used to ask. A unison built from source, or installed by
-# nix or brew, or living in /usr/local/bin, is invisible to `dpkg -l` -- so
+# nix or brew, or living in /usr/local/bin, is invisible to `dpkg -l`, so
 # charon called it absent, demanded sudo it did not need, and died in any
 # non-TTY context. That is precisely the false prerequisite the sudo gate was
 # added to remove; it was removed for the apt case and left in place for
@@ -996,8 +996,9 @@ prf_conflict_policy() {   # <profile> <mount-root> <cache-root>
 # DELETE=never. MEASURED behaviour, and the comment here used to claim the
 # opposite: nodeletion does NOT restore the missing copy. It stops the deletion
 # propagating, then leaves the path an unresolved conflict that FAILS every
-# pass until a human settles it. That is defensible -- you asked for deletions
-# never to propagate, so charon will not guess which side you meant -- but it
+# pass until a human settles it. That is defensible, since you asked for
+# deletions
+# never to propagate, so charon will not guess which side you meant, but it
 # is not what "never delete" sounds like.
 render_prf_delete() {   # <profile> <mount-root> <cache-root>
   [ "$(profile_get "$1" DELETE)" = never ] || return 0
@@ -1020,7 +1021,7 @@ render_prf_ignores() {   # <profile>
 
 # TIER 2, the escape hatch: a verbatim file included as-is, UNSUPPORTED. It
 # exists so Tier 1 never has to grow a knob per engine preference. Emitted only
-# when the file exists, because unison errors on a missing include -- so
+# when the file exists, because unison errors on a missing include, so
 # creating one is a config-time act that `check` reports as prf drift until
 # `install` regenerates. That visibility is the point, not a wart.
 render_prf_local() {   # <profile>
@@ -1087,7 +1088,7 @@ render_prf() {   # <profile>
 
 # Probe any source a profile uses that has no traits yet. Install is the
 # CONFIG-TIME moment: it is where the prf is rendered, and traits are that
-# render's input. A sync pass never does this -- a probe writes, and per-pass
+# render's input. A sync pass never does this: a probe writes, and per-pass
 # writes to the remote are the churn we removed.
 ensure_source_traits() {
   for _p in $(profile_names); do
@@ -1156,7 +1157,8 @@ sync_dropin_file() {   # <profile>
 }
 
 # The BACKSTOP pair: a daily blind sweep, for litter the per-pass surgical
-# cleanup could not know about. It is not redundant with it -- a crash before
+# cleanup could not know about. It is not redundant with it, because a crash
+# before
 # the state file was written, litter left by an older charon, a name whose
 # directory has since been renamed, or simply another machine's residue all
 # reach the remote without ever appearing in this box's settled list.
@@ -1214,7 +1216,7 @@ resolved_notify() {
     # >&2 IS LOAD-BEARING. This function's STDOUT is its return value, read by
     # `$(resolved_notify)`, so anything it prints there becomes part of the
     # value. log_info writes to stdout, so at LOG_LEVEL>=3 the baked notify path
-    # became "[INFO ] ...\n/home/jello/bin/...", which is MULTI-LINE -- and a
+    # became "[INFO ] ...\n/home/jello/bin/...", which is MULTI-LINE, and a
     # multi-line sed replacement is a sed ERROR, so render_sync_unit produced
     # nothing and install, which redirects straight to the unit file, left
     # charon-sync@.service EMPTY. Measured on a live box 2026-09-26 by running
@@ -1259,8 +1261,8 @@ write_profile_artifacts() {   # <profile>
 # That is not hypothetical: a stdout-polluted notify value made
 # render_sync_unit's sed fail, and install blanked charon-sync@.service on a
 # live box (2026-09-26). setup_unison_profiles already rendered via a temp for
-# exactly this reason -- "so a profile that cannot resolve does not leave a
-# truncated prf behind" -- and the UNIT writers never got the same treatment.
+# exactly this reason: "so a profile that cannot resolve does not leave a
+# truncated prf behind", and the UNIT writers never got the same treatment.
 # Stderr is deliberately NOT swallowed: the renderer's own reason is the only
 # clue to why it failed.
 install_artifact() {   # <live-path> <renderer> [args...]
@@ -1331,7 +1333,7 @@ setup_systemd_units() {
   log_trace "enabling timers"
   # SAY SO WHEN enable FAILS. These used to be bare `>/dev/null 2>&1` with the
   # status discarded, so install reported success having scheduled nothing and
-  # only a later `check` could notice -- the same silent-success-on-an-error
+  # only a later `check` could notice, the same silent-success-on-an-error
   # path this project already fixed once for the absent-scheduler case.
   for p in $(profile_names); do
     systemctl --user enable --now "charon-sync-$p.timer" >/dev/null 2>&1 \
@@ -1423,19 +1425,19 @@ seed_full() {
 # WHY THIS IS A SWEEP AND NOT A PREVENTION (all of it MEASURED 2026-09-25 in a
 # scratch pair; test/sweep.t reproduces the load-bearing parts).
 #
-# A crumb is NOT unison state. Unison's state -- the archives -- already lives
+# A crumb is NOT unison state. Unison's state (the archives) already lives
 # wholly outside both replicas in UNISON_DIR, so none of it reaches the remote.
 # `.unison.<name>.<hash>.unison.tmp` is the IN-FLIGHT CONTENT of a file being
 # written to the destination, staged in the destination DIRECTORY so the last
 # step can be an atomic rename(). rename() does not cross filesystems, so the
 # temp for a remote-bound transfer cannot be staged locally without giving up
-# atomicity -- a partially written file would be visible at the real name, on
+# atomicity: a partially written file would be visible at the real name, on
 # the remote. Unison offers no preference to relocate it, and the temp doubles
 # as the RESUME point (the manual: copyprogrest is used "when Unison sees a
 # partially transferred temp file on the receiving host").
 #
 # Unison DELETES its own temp the next time it propagates that path
-# SUCCESSFULLY -- with the Tier 0 ignore set or not, so the ignore never
+# SUCCESSFULLY, with the Tier 0 ignore set or not, so the ignore never
 # blocked cleanup. A temp therefore becomes permanent litter in exactly one
 # situation: the path stops needing propagation while a temp is outstanding.
 # That is what a WEDGED profile manufactures. Every pass fails so the temp is
@@ -1457,7 +1459,7 @@ seed_full() {
 #
 # WHY "SETTLED" AND NOT "FAILED". The obvious trigger is the wrong one: clean up
 # the paths that just FAILED. At that moment the temp is most likely to be a
-# legitimate RESUME POINT -- it exists precisely so the next pass continues
+# legitimate RESUME POINT: it exists precisely so the next pass continues
 # instead of re-transferring, which on a cold FUSE tree is the difference
 # between seconds and an hour. And the orphaning condition is "the path stopped
 # needing propagation while a temp was outstanding", which is NOT OBSERVABLE at
@@ -1466,7 +1468,7 @@ seed_full() {
 # The observable moment is the one AFTER: a path that was failing and is not in
 # the new failure list has settled. Either unison propagated it (and consumed
 # its own temp, so there is nothing to find) or it no longer needs propagating
-# at all -- which is the orphan case exactly, and now provable rather than
+# at all, which is the orphan case exactly, and now provable rather than
 # guessed. So no age gate is needed here: this is not "probably litter by
 # tomorrow", it is litter now.
 
@@ -1481,7 +1483,7 @@ settled_paths() {   # <profile> <new-failure-set-file, sorted>
 #
 # MATCHED LITERALLY, NOT BY GLOB. The obvious spelling is
 # `"$dir/.unison.$base."*.unison.tmp`, but $base is a FILENAME and the shell
-# would read any '[', '*' or '?' in it as pattern syntax -- so the one class of
+# would read any '[', '*' or '?' in it as pattern syntax, so the one class of
 # name this project keeps getting bitten by would silently not match. Listing
 # the directory and comparing strings cannot misread a name. It fails SAFE
 # either way (a miss leaves litter for the blind sweep; it can never delete the
@@ -1527,7 +1529,7 @@ sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path> [reason]
 # can fail the identical propagation every pass, forever: the attempt cannot
 # succeed, so unison never commits the archive, so the next pass tries exactly
 # the same thing. charon faulted loudly and correctly each time and the fault
-# never cleared, because nothing charon did could clear it -- and neither could
+# never cleared, because nothing charon did could clear it, and neither could
 # an integrator, since `install` cannot change what a past run returned. A human
 # had to run a pass by hand. Everything built since narrowed the blast radius;
 # none of it stopped a profile wedging.
@@ -1541,7 +1543,7 @@ sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path> [reason]
 # WHY THIS IS NOT THE AGE GATE AGAIN, and why it is safe to be more aggressive:
 # the sweep's gate exists because a RECENT temp is probably a live resume point.
 # For a path that has now failed N CONSECUTIVE COMPLETED passes, that premise is
-# measurably false -- the resume point has had N chances and helped none of
+# measurably false: the resume point has had N chances and helped none of
 # them. Critically, an interrupted pass does NOT advance the streak (its rc is
 # not trusted), so a path that is genuinely resuming across several long
 # transfers never reaches the threshold this way. The streak only counts "unison
@@ -1583,7 +1585,7 @@ unwedge_profile() {   # <profile>
   # (an unreadable file, a fifo, a socket) has no temp at all, and nor does a
   # propagation failure that never got as far as writing one. Announcing an
   # intervention and then silently doing nothing is the worst of both, so when
-  # there is nothing to drop charon says THAT instead -- which is itself the
+  # there is nothing to drop charon says THAT instead, which is itself the
   # useful signal: this profile is wedged and charon cannot help.
   _uwr=$(resolve_profile_roots "$1" 2>/dev/null) || return 0
   _uwm=${_uwr%%|*}; _uwt=${_uwr#*|}; _uwc=${_uwt%%|*}
@@ -1796,7 +1798,7 @@ gate_profile() {   # <profile> <service-name>
 # STREAMED, NOT BUFFERED: the journal must keep seeing unison's warnings and
 # failures as they happen, not in one lump when a pass that may run for an hour
 # finally ends. So this is a pipeline, and `$?` after a pipeline is tee's --
-# PIPESTATUS is not POSIX -- which is why the status is smuggled out through a
+# PIPESTATUS is not POSIX, which is why the status is smuggled out through a
 # file written INSIDE the pipeline. If the shell is killed before that write,
 # the file stays absent and this returns 125, which no unison status can be, so
 # a caller cannot mistake "no verdict recorded" for a real one.
@@ -1878,7 +1880,7 @@ run_sync_profile() {
   MSG="Unison $UNISON_PROFILE failed (exit $RET)."
   # NAME THE PATHS IN THE FLAG ITSELF. The flag is often the only thing a human
   # ever reads about a fault, and "exit 2, go read the log" made them go and
-  # read the log -- which on 2026-09-24 meant grepping the journal by hand for
+  # read the log, which on 2026-09-24 meant grepping the journal by hand for
   # six paths unison had already printed plainly.
   _rsf=$(failed_summary "$PROFILE")
   if [ -n "$_rsf" ]; then
@@ -1899,7 +1901,8 @@ run_sync_profile() {
 # The worse of two outcomes, by SEVERITY rather than recency: fault > skip >
 # success. `sync all` must report the worst thing that happened, or a fault
 # hides behind a later profile's success. A named function so the unit test
-# exercises THIS logic rather than a copy of it -- a test of a duplicate can
+# exercises THIS logic rather than a copy of it, because a test of a duplicate
+# can
 # pass while the real code is wrong.
 worse_of() {   # <a> <b>
   case "$2" in
@@ -2069,7 +2072,7 @@ check_sweep_units() {
   # SWEEP=off IS A VALID STATE AND MUST CHECK CLEAN. Reporting a user's
   # deliberate choice as drift is worse than a nag: an integrator turns a
   # non-zero check into drift and runs apply, apply re-enables the timer, and
-  # the choice is silently reverted on every provision sweep -- a fight the user
+  # the choice is silently reverted on every provision sweep, a fight the user
   # cannot win. So the declaration is asserted in BOTH directions, and what
   # would be drift here is the artifacts SURVIVING the switch to off.
   if ! sweep_scheduled; then
@@ -2205,7 +2208,7 @@ report_failed_paths() {   # <profile>
 # Render to a TEMP FILE, not a pipe: the comparison stays byte-exact, and a
 # render FAILURE becomes distinguishable from a mismatch. Reporting an
 # unresolvable source as "hand-patched, or a stale install" sends the reader
-# hunting for an edit that does not exist -- exactly what happened
+# hunting for an edit that does not exist, exactly what happened
 # mid-migration, when profiles named a source not published yet.
 check_profile_prf() {   # <profile>
   _ppr=0
@@ -2245,7 +2248,7 @@ check_profile_health() {   # <profile>
 
 # Orphaned unison temps are LITTER, and litter is deliberately NOT drift: this
 # reports and returns 0. Making it fail would put `charon check` into exactly
-# the trap the 2026-09-24 incident exposed -- an integrator turns a non-zero
+# the trap the 2026-09-24 incident exposed: an integrator turns a non-zero
 # check into drift, runs apply, and apply has no verb that clears it, so the
 # provision loop spins forever on something harmless. The remedy is a SEPARATE
 # verb a human (or a cron) invokes, and check's job is only to stop the litter
@@ -2362,7 +2365,7 @@ do_check() {
 # UNSET IT BEFORE RETURNING. The flag has to be visible to the shell that is
 # sourcing this file, but if it survives into the ENVIRONMENT every sibling impl
 # a function shells out to (charon-source health / status / seed / probe) hits
-# this same guard and exits 0 having done NOTHING -- a silent no-op that reads
+# this same guard and exits 0 having done NOTHING, a silent no-op that reads
 # as success. Measured: seed_profile "succeeded" without running rclone at all,
 # and a gate "passed" because charon-source status no-op'd. Unsetting here makes
 # the seam safe no matter how a test sets the variable.
@@ -2399,7 +2402,7 @@ exit $?
 #### Embedded templates (read by extract_section; never executed) ####
 
 __SECTION_BEGIN__ prf:charon
-# Unison preferences -- @LABEL@
+# Unison preferences for @LABEL@
 batch = true
 label = @LABEL@
 root = @MOUNT_ROOT@
@@ -2408,7 +2411,7 @@ silent = true
 copyonconflict = true
 # Unison's own transfer temps are NEVER content. A run killed mid-transfer
 # strands one in the destination dir; with no ignore, the NEXT pass sees it as
-# an ordinary new file and REPLICATES it to the other side -- so a crumb on the
+# an ordinary new file and REPLICATES it to the other side, so a crumb on the
 # cache becomes a crumb on the remote, permanently. Found 2026-09-11: 544 such
 # files, an IDENTICAL set on both sides (the proof they were synced, not
 # independently stranded), 54 MB each way. Ignoring them makes the sync blind to

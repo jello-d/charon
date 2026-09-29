@@ -5,7 +5,7 @@
 # THE GAP THIS CLOSES. The daily sweep shipped enabled by default with NO way to
 # turn it off. `systemctl --user disable charon-sweep.timer` made `charon check`
 # FAIL forever, and an integrator that turns a non-zero check into drift (tackup
-# does) then runs apply, which re-enables it -- so a deliberate opt-out was
+# does) then runs apply, which re-enables it, so a deliberate opt-out was
 # silently reverted on every provision sweep. Not a nag: a fight the user loses.
 # That is the litter-is-not-drift mistake one level up, and it matters most for
 # an outside user, who did not choose charon's defaults.
@@ -121,7 +121,7 @@ _c install 2>"$T/offerr" >/dev/null || fail "install failed with SWEEP=off"
   deleting from the user's remote after they asked it not to"
 [ -e "$SD/charon-sweep.service" ] && fail "SWEEP=off left the sweep service"
 # -L AS WELL AS -e: `disable` removes the wants symlink, but if only the unit
-# FILE were removed the symlink would remain DANGLING -- and -e follows a
+# FILE were removed the symlink would remain DANGLING, and -e follows a
 # symlink, so it is FALSE for one. This assertion could not see a leftover
 # enablement
 # until it asked -L, which is the same trap that once hid a dangling unit link
@@ -131,7 +131,7 @@ _c install 2>"$T/offerr" >/dev/null || fail "install failed with SWEEP=off"
   timer systemd has already loaded was never stopped)"
 # AND IT MUST NOT NAG. Re-running enable for a unit that was deliberately
 # removed fails every time, and a warning that fires on every install is a
-# warning nobody reads -- this project has already paid for that once.
+# warning nobody reads, and this project has already paid for that once.
 grep -q 'could not enable charon-sweep' "$T/offerr" \
   && fail "a SWEEP=off install warned about failing to enable the timer it was
   asked not to install; that warning would fire on every single install"
@@ -142,7 +142,7 @@ _c check >"$T/chk" 2>&1; _offrc=$?
   choice is reverted on every provision sweep. Output: $(cat "$T/chk")"
 grep -q '\[OK\].*SWEEP=off' "$T/chk" \
   || fail "check did not say the sweep is off BY CONFIG: $(cat "$T/chk")"
-# The verb still works by hand -- 'off' is about the schedule, not the feature.
+# The verb still works by hand: 'off' is about the schedule, not the feature.
 _c sweep >/dev/null 2>&1 \
   || fail "'charon sweep' stopped working with SWEEP=off; the setting governs
   the TIMER, not whether a human can ask for a sweep"
@@ -171,7 +171,8 @@ _c check >/dev/null 2>&1 || fail "check failed after a repeat off install"
 
 # ----------------------------------------------------------------- part 3b ---
 # WEEKLY is a third real cadence, not an alias, and the CADENCE has to reach the
-# generated timer -- otherwise `SWEEP=weekly` would silently still sweep daily,
+# generated timer, because otherwise `SWEEP=weekly` would silently still sweep
+# daily,
 # which is the sort of setting-that-does-nothing this project keeps finding.
 printf 'SWEEP=weekly\n' > "$CFG/charon.conf"
 _c install >/dev/null 2>&1 || fail "install failed with SWEEP=weekly"
@@ -186,7 +187,7 @@ grep -q 'charon-sweep.timer enabled (weekly)' "$T/chk" \
 
 # CHANGING THE CADENCE IS DRIFT UNTIL INSTALL RE-RENDERS. The timer is a
 # generated artifact, so a config change that does not reach it must be caught
-# by the diff like any other -- that is the whole reason check diffs rather than
+# by the diff like any other, which is the whole reason check diffs rather than
 # merely looking for the file.
 printf 'SWEEP=daily\n' > "$CFG/charon.conf"
 _c check >"$T/chk" 2>&1 \
@@ -257,7 +258,7 @@ for bad in abc '12m' '-5' '1 0' 0.5; do
     points rather than litter, so it must refuse"
 done
 # An EMPTY value is indistinguishable from an absent key to the reader, so it
-# falls back to the SAFE default rather than refusing -- and the thing that
+# falls back to the SAFE default rather than refusing, and the thing that
 # matters is which way it falls: 1440, never 0.
 printf 'CRUMB_AGE_MIN=\n' > "$CFG/charon.conf"
 [ "$(crumb_age_min)" = 1440 ] \

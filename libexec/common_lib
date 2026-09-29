@@ -5,7 +5,7 @@
 # THE `_lib` MARKER MEANS SOURCED, NEVER EXECUTED, and it is a `_` rather than a
 # `-` deliberately: `-` separates words in a name, `_` separates the name from
 # its classifier, so `common_lib` parses as name `common` plus role `lib` while
-# `common-lib` would be ambiguous. That makes the seam machine-checkable -- a
+# `common-lib` would be ambiguous. That makes the seam machine-checkable, a
 # rule asserting "everything matching *_lib is sourced, never executed" can be
 # written against `_` and cannot against `-`. It was `common.sh` until
 # 2026-09-29; a language tag says nothing useful about a file whose language is
@@ -16,7 +16,7 @@
 #
 # The remote name, the mount path, and the local cache are ONE fact each, shared
 # here so a drift cannot make sync a different tree than mount mounts. All
-# overridable (env wins) -- for a test, or a second remote. The mount and cache
+# overridable (env wins), for a test or a second remote. The mount and cache
 # DERIVE from the remote name, so a single CHARON_REMOTE override renames all
 # three coherently (e.g. dropbox -> ~/dropbox + ~/.dropbox). charon is
 # provider-neutral (any rclone remote); the "gdrive" default is just the common
@@ -31,7 +31,7 @@ CHARON_CONFIG=${CHARON_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/charon}
 # the shared preamble, because BOTH impls must resolve it identically: the
 # mount brings a source up and the sync reconciles it, and if each derived its
 # own idea of "which remote, at which path" they could disagree. That is not
-# hypothetical -- until this moved here, charon-mount read CHARON_REMOTE
+# hypothetical: until this moved here, charon-mount read CHARON_REMOTE
 # directly while charon-sync resolved a source, which is exactly why an
 # integrator could not safely declare a source at all.
 CHARON_SOURCES_DIR=${CHARON_SOURCES_DIR:-$CHARON_CONFIG/sources.d}
@@ -42,7 +42,7 @@ CHARON_SOURCE=${CHARON_SOURCE:-default}
 # all; writing sources.d/default.conf overrides any key of it.
 # TRAITS are facts about what a source IS, measured rather than declared: is it
 # case-sensitive, do mtimes stick, does it carry Unix permissions and symlinks.
-# They are NOT user preference -- Drive is case-sensitive, SMB and FAT are not,
+# They are NOT user preference: Drive is case-sensitive, SMB and FAT are not,
 # and a wrong guess exits a whole profile. They live in STATE, not cache: a
 # cleared cache must never silently change sync semantics.
 #
@@ -94,7 +94,7 @@ source_get() {   # <source> <KEY>
   # The quoting is the POINT, and a static analyser will flag it as a mistake:
   # we are matching and stripping a LITERAL "~/", so it must NOT expand. Unquote
   # it and the shell turns the pattern into $HOME/, which never matches the
-  # literal prefix -- that exact bug put a working link at $HOME/~/... on a live
+  # literal prefix: that exact bug put a working link at $HOME/~/... on a live
   # box.
   # shellcheck disable=SC2088
   case "$_v" in "~/"*) _v="$HOME/${_v#"~/"}" ;; esac
@@ -128,7 +128,7 @@ PROBE_DIR_NAME=.charon-probe        # the trait probe's scratch (a DIRECTORY)
 #   - a pattern with NO leading `/` matches at ANY DEPTH, so the file glob needs
 #     no `**` prefix. Verified at root, one level down and two.
 #   - A DIRECTORY NEEDS `/**` (or a trailing slash). `--exclude .charon-probe`
-#     is read as a FILE pattern and silently excludes NOTHING -- the obvious
+#     is read as a FILE pattern and silently excludes NOTHING, the obvious
 #     spelling is the broken one, which is exactly the sort of exclude that
 #     looks right in a diff and does nothing in production.
 never_content_excludes() {
@@ -139,16 +139,16 @@ never_content_excludes() {
 # question from "is anything wrong" and the only one an integrator can act on.
 #
 #   0  clean
-#   1  DRIFT -- re-provisioning will plausibly fix this (an artifact differs
+#   1  DRIFT: re-provisioning will plausibly fix this (an artifact differs
 #      from what this version would write, a unit is not enabled, a path charon
 #      owns is missing)
-#   2  FAULT -- it will not. The install is correct and something is failing, or
+#   2  FAULT: it will not. The install is correct and something is failing, or
 #      the configuration itself is wrong. It needs time or a human.
 #
 # WHY IT MATTERS, measured on a live fleet 2026-09-24: an integrator that reads
 # "non-zero" as drift schedules a repair for a runtime fault, runs it, finds the
 # check still failing, and reports "bad state or a bug". tackup's own summary
-# code concedes the point in a comment -- "a check cannot tell the two apart" --
+# code concedes the point in a comment, "a check cannot tell the two apart" --
 # and works around it by calling everything "findings". charon CAN tell them
 # apart, so it should say which.
 #
@@ -166,7 +166,7 @@ CHECK_FAULT=
 
 # Report one failing finding AND classify it. Every [FAIL]/[FAULT] line in a
 # check goes through one of these, so a finding cannot be reported without
-# saying which kind it is -- check_verdict fails loudly if one ever is.
+# saying which kind it is, and check_verdict fails loudly if one ever is.
 fail_drift() { printf '  [FAIL]  %s\n' "$*"; CHECK_DRIFT=1; }
 fail_fault() { printf '  [FAULT] %s\n' "$*"; CHECK_FAULT=1; }
 

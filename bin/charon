@@ -16,7 +16,7 @@
 # exist, so it lives under `charon source`. Users manage sources; the provider
 # behind one is an implementation detail, not a concept to learn.
 #
-# EVERY OLDER SPELLING STILL WORKS -- `charon sync run <p>`, `charon sync
+# EVERY OLDER SPELLING STILL WORKS: `charon sync run <p>`, `charon sync
 # install`, `charon mount <run|stop|status|install>` and the rest are kept as
 # aliases. A generated unit from a previous version must never break because
 # the command was renamed underneath it, and an integrator must be able to
@@ -102,7 +102,7 @@ case "${1:-}" in
            # EVERY rclone-backed source gets its own mount instance. This used
            # to install the FIRST one and print a note about the rest, which
            # meant a second remote was configured, given profiles and sync
-           # units, and then never mounted -- a promise the config accepted and
+           # units, and then never mounted, a promise the config accepted and
            # nothing kept.
            _any=
            for _s in $("$_lib/charon-source" list); do

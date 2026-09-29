@@ -116,7 +116,7 @@ do_check() {
       # not broken. And an INTEGRATOR running this check from a non-login
       # context (an ssh command, a cron, an agent) has no ~/.local/bin on PATH
       # by construction, so a hard failure there is a false finding it cannot
-      # clear -- observed 2026-09-24, where a remote `tackup check` reported
+      # clear, observed 2026-09-24, where a remote `tackup check` reported
       # this against a box whose own provision had just verified clean.
       warn "$_n installed at $_want but not on THIS shell's PATH"
     elif [ "$(readlink -f "$_got" 2>/dev/null)" \

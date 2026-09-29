@@ -55,8 +55,8 @@ _n=$((_n + 1))
 
 # 1. INDENT WITH 2 SPACES, NEVER TABS.
 #
-# A file that legitimately CONTAINS a tab -- a captured transcript, a Makefile
-# recipe -- declares so with a `tabs-are-data:` marker and says why. That is the
+# A file that legitimately CONTAINS a tab (a captured transcript, a Makefile
+# recipe) declares so with a `tabs-are-data:` marker and says why. That is the
 # honest shape for an exception: it lives in the file it applies to, it carries
 # its reason, and it cannot be forgotten. A silent allowlist here would rot the
 # moment the file changed.

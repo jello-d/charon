@@ -5,7 +5,7 @@
 # THE GAP THIS CLOSES, measured on a live fleet 2026-09-24. An integrator reads
 # a non-zero check as drift, schedules a repair, runs it, finds the check still
 # failing, and reports "bad state or a bug". tackup's own summary code concedes
-# the point in a comment -- "a check cannot tell the two apart" -- and works
+# the point in a comment ("a check cannot tell the two apart") and works
 # around it by calling everything "findings". That cost three full provision
 # passes re-installing units and re-seeding a wallpaper for a fault no
 # re-provision could touch.
@@ -14,9 +14,9 @@
 #
 #   0  clean
 #   1  DRIFT  an artifact differs from what this version writes, a unit is not
-#             enabled, a path charon owns is missing -- re-provision fixes it
+#             enabled, a path charon owns is missing, and re-provision fixes it
 #   2  FAULT  the install is correct and something is failing, or the config
-#             itself is wrong -- it needs time or a human
+#             itself is wrong, and it needs time or a human
 #
 # DRIFT BEATS FAULT when both are present, and that ordering is what makes it
 # safe for an integrator to skip the repair on a bare fault: if anything
@@ -82,7 +82,7 @@ esac
 # The helpers classify, and print a marker a reader can tell apart.
 #
 # CAPTURED TO A FILE, NOT WITH $( ). These set a shell variable, and a command
-# substitution runs in a SUBSHELL where the assignment cannot escape -- so the
+# substitution runs in a SUBSHELL where the assignment cannot escape, so the
 # first version of this asserted the flag was unset and "caught" a bug that was
 # entirely its own. The same trap once made a warn-once guard look broken here.
 CHECK_DRIFT=; CHECK_FAULT=

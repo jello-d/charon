@@ -6,7 +6,7 @@
 # authorization, and a --user manager session with NO SEAT does not get it:
 # polkit answers "Access denied ... requires interactive authentication" and
 # systemd-inhibit exits 1. The whole pass used to hang off that one command, so
-# a denial did not degrade the sync, it CANCELLED it -- manifestor failed 5 of
+# a denial did not degrade the sync, it CANCELLED it: manifestor failed 5 of
 # 6 timed documents runs and 2 of 3 media runs that way, while manifold (a
 # seated session) was perfectly clean, which made a latent bug look
 # box-specific.

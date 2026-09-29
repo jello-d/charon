@@ -1,7 +1,7 @@
 #!/bin/sh
 # profiles.t - the config-driven engine: a profiles.d/<name>.conf drives the
 # generated unison profile, the systemd timer (with its cadence), the service
-# template's baked config -- all from config, with no baked
+# template's baked config: all from config, with no baked
 # Media/Documents. Runs `charon-sync install` against stubs (no real rclone/
 # unison/systemctl), everything confined to a scratch HOME.
 . "$(dirname "$0")/harness_lib"

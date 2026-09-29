@@ -56,7 +56,7 @@ _self=$HERE/libexec/charon-sync
 # tabs-are-data: a byte-level unison transcript, reproduced exactly.
 # THE TWO TAB-INDENTED LINES BELOW ARE DATA, NOT INDENTATION. unison really
 # does indent those two paths with a literal tab, and this sample is a
-# byte-level reproduction of its output -- retabbing them to spaces would
+# byte-level reproduction of its output, and retabbing them to spaces would
 # falsify the very thing the parse is being tested against. The house rule is 2
 # spaces and no tabs; a captured transcript is not source formatting.
 cat > "$T/out" <<'EOF'
@@ -240,8 +240,8 @@ done
 #
 #     pass 1  {A, B}      pass 2  {A, B, C}      pass 3  {A, B}
 #
-# reset both every single time, so a fault whose set SHIFTS -- one path
-# intermittently succeeding, new files arriving in a broken folder -- reported
+# reset both every single time, so a fault whose set SHIFTS (one path
+# intermittently succeeding, new files arriving in a broken folder) reported
 # "first seen 0s ago" forever and could NEVER reach the unwedge threshold. The
 # chronic case was both invisible and unfixable.
 _rec() {   # <profile> <path> -> "<streak> <since>", or nothing
@@ -342,7 +342,7 @@ run_teed "" sh -c 'exit 5'; [ "$?" = 5 ] \
 
 # ----------------------------------------------------------------- part 5 ----
 # THE REPORT. check must NAME the paths, and it must do so even when the unit
-# SUCCEEDED -- unison exits 2 only for a transfer failure, so a profile can be
+# SUCCEEDED: unison exits 2 only for a transfer failure, so a profile can be
 # green overall with a path quietly stuck. A verdict line with nothing under it
 # is the "presence is not function" trap in a new place.
 record_failures docs 2 "$T/out"
@@ -476,7 +476,7 @@ _e2e=$(failed_paths docs)
 # sets `root = <mount>/<subtree>`, so the subtree is NOT part of what unison
 # reports. Pinned here because the surgical cleanup built on this has to join
 # the path back onto a root to find a crumb, and prefixing the subtree twice
-# would look for it in a directory that does not exist -- a cleanup that
+# would look for it in a directory that does not exist, a cleanup that
 # silently finds nothing is the worst kind.
 printf '%s\n' "$_e2e" | grep -qx 'Fenix Watchface - tuned.psp' \
   || fail "the recorded path is not the one that failed; got: $_e2e"
@@ -543,7 +543,7 @@ sweep_path_crumbs "$T/mnt" "$T/cch" 'nope/gone.txt' \
   || fail "sweep_path_crumbs failed on a path whose directory does not exist"
 
 # ----------------------------------------------------------------- part 9 ----
-# END TO END: a path fails, strands a crumb, then settles -- and the crumb goes
+# END TO END: a path fails, strands a crumb, then settles, and the crumb goes
 # on the very next pass, with no age gate involved, because settling is proof
 # rather than a guess.
 command -v unison >/dev/null 2>&1 || {
@@ -631,7 +631,7 @@ rm -f "$T/bin/unison"
 # UNWEDGING: the fault that nothing could clear.
 #
 # A profile that fails the identical propagation every pass stays failed
-# forever -- the attempt cannot succeed, so unison never commits the archive, so
+# forever: the attempt cannot succeed, so unison never commits the archive, so
 # the next pass tries exactly the same thing. That ran for four hours on
 # 2026-09-24 and a human had to break it by hand. The one safe intervention is
 # to drop the transfer temps for the failing paths: a temp is never content, it

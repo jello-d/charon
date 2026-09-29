@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# charon-source: manage the SOURCES charon caches -- list them, show what is
+# charon-source: manage the SOURCES charon caches: list them, show what is
 # known about one, and MEASURE its backend traits.
 #
 #   charon source list           the configured sources (+ the implicit default)
@@ -19,7 +19,7 @@
 # has no traits, and this verb re-probes on demand. A sync pass NEVER probes,
 # because a probe WRITES, and per-pass writes to the remote are the churn this
 # project spent a day removing. The prf is DERIVED from traits, so re-probing
-# makes the live prf stale and `charon sync check` reports it -- probe, check,
+# makes the live prf stale and `charon sync check` reports it: probe, check,
 # install, green.
 #
 # A FAILED PROBE RECORDS NOTHING. An uncertain measurement is worse than no
@@ -144,8 +144,8 @@ do_health() {   # <source>
       # TRANSIENT outage here: a local tree is either present or it is broken.
       # Report online unconditionally and let do_status decide liveness, which
       # the caller turns into a FAULT. Returning "offline" instead would map a
-      # vanished fstab or NFS mount onto the SKIP path -- no flag raised, no
-      # failed unit, the box quietly not syncing -- and a mount that is gone
+      # vanished fstab or NFS mount onto the SKIP path, with no flag raised, no
+      # failed unit, the box quietly not syncing, and a mount that is gone
       # is not going to come back on its own the way a network blip does.
       echo online; return 0 ;;
   esac
@@ -175,7 +175,7 @@ do_seed() {   # <source> <subtree> <dest>
       #
       # SAVE $1/$2/$3 FIRST. `set --` replaces the FUNCTION's OWN positional
       # parameters, so building the list first and reading $2/$3 afterwards
-      # sent rclone `copy gd:--exclude ...` -- it would have seeded from a
+      # sent rclone `copy gd:--exclude ...`, and it would have seeded from a
       # remote path named after a flag. POSIX sh has no `local` and this is that
       # hazard in a new place. Caught at once by seed.t's direction assertion,
       # which is the data-safety property justifying a background seed at all.
@@ -260,7 +260,7 @@ probe_fstype() { stat -f -c %T "$1" 2>/dev/null || printf 'unknown'; }
 # Was the source a MOUNTPOINT when we measured it? Recorded as a trait rather
 # than declared, for the same reason as the rest: it is a fact about the
 # source. It is also the only way to tell a legitimate plain-directory source
-# from a MOUNT THAT HAS VANISHED -- an unmounted mountpoint is still an
+# from a MOUNT THAT HAS VANISHED: an unmounted mountpoint is still an
 # existing, empty directory, so an existence test calls it healthy while the
 # tree it should expose is gone.
 probe_mountpoint() {   # <dir> -> yes | no
@@ -309,9 +309,10 @@ _probe_failed() {   # <source> <what>
   log_error "probe of '$1' failed at the $2 step; recording NOTHING."
   log_error "an uncertain measurement is worse than none: it becomes an"
   log_error "assertion nobody re-checks. Fix the source and probe again."
-  # Guard the expansion. If MOUNT ever resolved empty -- an undefined source, a
-  # typo, a config edited between the probe starting and failing -- this became
-  # `rm -rf "/.charon-probe"`, an attempted delete at the filesystem ROOT. It
+  # Guard the expansion. If MOUNT ever resolved empty (an undefined
+  # source, a typo, a config edited between the probe starting and
+  # failing) this became `rm -rf "/.charon-probe"`, an attempted delete at the
+  # filesystem ROOT. It
   # would fail unprivileged, which is luck rather than design.
   _pf_mnt=$(source_get "$1" MOUNT)
   [ -n "$_pf_mnt" ] || return 0
@@ -387,7 +388,7 @@ _need() {
 # UNSET IT BEFORE RETURNING. The flag has to be visible to the shell that is
 # sourcing this file, but if it survives into the ENVIRONMENT every sibling impl
 # a function shells out to (charon-source health / status / seed / probe) hits
-# this same guard and exits 0 having done NOTHING -- a silent no-op that reads
+# this same guard and exits 0 having done NOTHING, a silent no-op that reads
 # as success. Measured: seed_profile "succeeded" without running rclone at all,
 # and a gate "passed" because charon-source status no-op'd. Unsetting here makes
 # the seam safe no matter how a test sets the variable.

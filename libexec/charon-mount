@@ -32,8 +32,8 @@ MOUNTPOINT="${MOUNTPOINT:-$(source_get "$CHARON_SOURCE" MOUNT)}"
 # ONE TEMPLATE, INSTANCED PER SOURCE. This replaced a singleton that could only
 # ever mount one remote: a second rclone-backed source was accepted by the
 # config, handed profiles and sync units, and then silently never mounted. The
-# limitation was never rclone's -- rclone holds many remotes in one config,
-# namespaces its VFS cache per remote, and runs one process per mount -- it was
+# limitation was never rclone's: rclone holds many remotes in one config,
+# namespaces its VFS cache per remote, and runs one process per mount, it was
 # purely this unit being a single file with one source baked into it.
 SYSTEMD_TEMPLATE="charon-mount@.service"
 # The singleton, swept on install. Named here because a box upgrading across
@@ -49,7 +49,7 @@ mount_unit() { printf 'charon-mount@%s.service' "$1"; }
 # INSTANCE is not a unit file: `list-unit-files 'charon-mount@*.service'`
 # reports the TEMPLATE, charon-mount@.service, whose instance part is empty.
 # The first version of the orphan check and of uninstall both enumerated that
-# way and so found NOTHING on real systemd -- an orphaned instance went
+# way and so found NOTHING on real systemd, so an orphaned instance went
 # unreported and uninstall left instances enabled against a template it had
 # just deleted. Both passed their test, because the test's systemctl stub
 # answered that query the way I assumed rather than the way systemd does.
@@ -124,7 +124,7 @@ remote_type() {
 # Ensure rclone is installed and the '<REMOTE_NAME>:' remote exists.
 #
 # Many rclone backends (Google Drive, Dropbox, ...) auth over OAuth: the refresh
-# token can't be synthesized from prompted values -- it only comes from a real
+# token can't be synthesized from prompted values: it only comes from a real
 # browser authorization. But the token is portable and already lives on any
 # machine set up before this one, so after the first machine we just pull the
 # remote stanza from a configured peer over SSH (rclone.conf is a per-machine
@@ -139,7 +139,7 @@ RCLONE_DEB_URL=https://downloads.rclone.org/rclone-current-linux-amd64.deb
 # THIS USED TO APPEND STRAIGHT FROM THE PIPE: `ssh peer "rclone config show X"
 # >>"$RCLONE_CONF"`. The redirect happens BEFORE ssh's status is known, so a
 # connection that dropped mid-transfer left a TRUNCATED stanza permanently in
-# the file -- measured, ending mid-JSON inside an OAuth token:
+# the file, measured, ending mid-JSON inside an OAuth token:
 #
 #     [gdrive]
 #     type = drive
@@ -188,7 +188,7 @@ pull_remote_from_peer() {   # <peer>
     rm -f "$_pt"; return 1
   fi
   # Append only now. A leading newline keeps the stanza from fusing onto a
-  # previous line that lacked a trailing one -- which is exactly the state the
+  # previous line that lacked a trailing one, which is exactly the state the
   # old truncating path used to leave behind.
   { printf '\n'; cat "$_pt"; } >>"$RCLONE_CONF" || {
     log_error "could not write $RCLONE_CONF"; rm -f "$_pt"; return 1; }
@@ -281,9 +281,9 @@ do_mount() {
   # NOT a preference: Drive reports NO byte size for a native gdoc, so
   # rclone can only present one as a 0-byte file. Unison then syncs that stub,
   # sees it diverge from the real local export, and (copyonconflict) lays down a
-  # "(conflict_on_DATE)" twin -- 535 junk files in one pass on 2026-06-16.
+  # "(conflict_on_DATE)" twin: 535 junk files in one pass on 2026-06-16.
   # Hiding gdocs removes the stub. Only Drive has this pathology, so gate the
-  # flag on the backend type -- other remotes must not get it.
+  # flag on the backend type, because other remotes must not get it.
   if [ "$(remote_type)" = drive ]; then
     set -- "$@" --drive-skip-gdocs
   fi
@@ -331,7 +331,7 @@ extract_block() {
 
 # The unit this version WOULD write, on stdout. ONE renderer, used by install to
 # write it and by check to diff the live one against it. A generated file that
-# nothing diffs is invisible drift -- the lesson the prf already taught: three
+# nothing diffs is invisible drift, the lesson the prf already taught: three
 # hand-patches rode on two boxes for a day because install wrote the prf and
 # check never looked at it. The units had exactly the same blind spot.
 #
@@ -380,8 +380,8 @@ check_legacy_singleton() {
 }
 
 # EVERY rclone-backed source must have a live instance. The singleton could
-# only ever be asked about one unit, so the interesting question -- is each
-# configured remote actually mounted -- could not even be posed.
+# only ever be asked about one unit, so the interesting question (is each
+# configured remote actually mounted) could not even be posed.
 check_source_instances() {
   _sir=0; _any=
   for _s in $(rclone_sources); do
@@ -424,7 +424,7 @@ do_check() {
   # BYO-only install (every source PROVIDER=none) fail check FOREVER: install
   # exits 0, check exits 1, with nothing a user could do about it. PROVIDER=none
   # is an advertised feature, and an integrator that delegates its verdict to
-  # `charon check` -- which is the contract -- would have shown permanent drift.
+  # `charon check` (which is the contract) would have shown permanent drift.
   #
   # A stale template or instance is STILL drift here, because it can only have
   # come from a source that has since gone away, so those two checks still run.
@@ -518,7 +518,7 @@ do_uninstall() {
 # UNSET IT BEFORE RETURNING. The flag has to be visible to the shell that is
 # sourcing this file, but if it survives into the ENVIRONMENT every sibling impl
 # a function shells out to (charon-source health / status / seed / probe) hits
-# this same guard and exits 0 having done NOTHING -- a silent no-op that reads
+# this same guard and exits 0 having done NOTHING, a silent no-op that reads
 # as success. Measured: seed_profile "succeeded" without running rclone at all,
 # and a gate "passed" because charon-source status no-op'd. Unsetting here makes
 # the seam safe no matter how a test sets the variable.

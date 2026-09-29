@@ -3,18 +3,18 @@
 #
 # THE GAP THIS CLOSES. charon has carried `ignore = Name .unison.*.unison.tmp`
 # since 2026-09-11 with a comment saying sweeping the litter "is an out-of-band
-# job" -- and that job did not exist. Worse, the reason crumbs accumulate was
+# job", and that job did not exist. Worse, the reason crumbs accumulate was
 # never established, so the ignore itself was under suspicion for blocking
 # unison's cleanup. This test settles the mechanism with REAL unison over REAL
 # trees (a prf-line test could never have), then pins the sweeper built on it.
 #
 # The four facts, each measured rather than reasoned:
-#   1. the temp is written on the DESTINATION side -- so it cannot be kept off
+#   1. the temp is written on the DESTINATION side, so it cannot be kept off
 #      a remote replica, because that is where a remote-bound file is staged.
 #   2. unison DELETES its own temp when it next propagates that path.
 #   3. it does so WITH the ignore set too, so the ignore is NOT the culprit.
 #   4. a temp orphans ONLY when the path stops needing propagation while one is
-#      outstanding -- the wedged-profile signature, and the whole of the
+#      outstanding: the wedged-profile signature, and the whole of the
 #      2026-09-24 incident.
 #
 # Fact 3 is the one worth having in a suite forever: it is the difference
@@ -89,7 +89,7 @@ _strand || fail "could not strand a temp mid-transfer: unison finished the
 # 1b. UNISON CONSUMES ITS OWN TEMP when it next propagates that path.
 #
 # DELIBERATELY NOT ASSERTED: unison's exit status. The claim under test is about
-# the temp, and the two are independent -- measured on manifold, where resuming
+# the temp, and the two are independent, measured on manifold, where resuming
 # an interrupted transfer delivered the file AND consumed the crumb while
 # exiting 2 with "Destination updated during synchronization" (its post-rename
 # verification tripped over the state the killed run left). The first version of
@@ -186,7 +186,7 @@ set -- $(crumb_tally)
 
 # 2b. check REPORTS litter and does NOT call it drift. This is the load-bearing
 # one: the 2026-09-24 incident showed that a non-zero check becomes an
-# integrator's drift, and apply has no verb that clears litter -- so failing
+# integrator's drift, and apply has no verb that clears litter, so failing
 # here would spin a provision loop forever on something harmless.
 _ck=$(check_crumbs 2>&1); _ckrc=$?
 [ "$_ckrc" = 0 ] || fail "check_crumbs returned $_ckrc: litter must be
@@ -263,7 +263,7 @@ printf 'x' > "$LOCKED"; touch -d '30 days ago' "$LOCKED"
 # Killing it is not enough and quietly broke the case that follows: `flock -c`
 # execs a shell that INHERITS the locked fd, so killing the flock process can
 # leave that child alive still holding the lock. The lock was then still held
-# during 2g, whose do_sweep returned EX_SKIP rather than 0 -- so 2g passed no
+# during 2g, whose do_sweep returned EX_SKIP rather than 0, so 2g passed no
 # matter what the code did. Caught by mutation; it is the third test in this
 # project to fail this way.
 flock "$LOCKFILE" -c \

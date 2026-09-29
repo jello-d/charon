@@ -17,7 +17,7 @@
 # Two things then compound it. rclone REPORTS the remote as existing, so
 # charon's own already-configured check skips the pull on the next run while the
 # remote is unusable. And rclone.conf is shared with every other rclone user on
-# the box, so charon corrupted a file it does not own -- one that holds
+# the box, so charon corrupted a file it does not own, one that holds
 # credentials, where a half-write is the worst available outcome.
 #
 # This was the surface I had written off as "needs ssh and a TTY, accept it
@@ -131,7 +131,7 @@ printf '%s\n' "$out" | grep -qi 'already has' \
 
 # --- a NEWLINE is written before the stanza ---
 # Without it a stanza fuses onto a previous line that lacked a trailing newline
-# -- which is precisely the state the old truncating path left behind, so the
+# which is precisely the state the old truncating path left behind, so the
 # recovery case would have corrupted the file a second way.
 cat > "$T/bin/rclone" <<'STUB'
 #!/bin/sh
