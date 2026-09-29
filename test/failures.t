@@ -61,8 +61,8 @@ _self=$HERE/libexec/charon-sync
 # spaces and no tabs; a captured transcript is not source formatting.
 cat > "$T/out" <<'EOF'
 Warning: No archive files were found for these roots, whose canonical names are:
-	/tmp/x/L
-	/tmp/x/R
+  /tmp/x/L
+  /tmp/x/R
 [BGN] Copying sub/decoy.png from /tmp/x/L to /tmp/x/R
 [END] Copying sub/decoy.png
 Failed [sub/Fenix Watchface - tuned.psp]: Error in copying locally:
