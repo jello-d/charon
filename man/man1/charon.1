@@ -5,7 +5,7 @@ charon \- rclone remote-storage mount + bidirectional sync
 .B charon
 ferries files between any rclone remote and the local machine: it mounts the
 remote via FUSE and keeps a fast local cache in step with it using Unison. It is
-provider-neutral \(em Google Drive, Dropbox, or any rclone backend \(em and the
+provider-neutral (Google Drive, Dropbox, or any rclone backend) and the
 value is the MANAGEMENT (a caching mount, bidirectional sync, resumable
 seeding), not the provider. One command,
 .BR charon .
@@ -99,7 +99,7 @@ are applied only to the matching remote type.
 Keep the local cache
 .RI ( ~/.<remote> )
 in step with the mount using Unison; the mount is canonical. Sync is driven by
-per-subtree PROFILES \(em nothing is baked in.
+per-subtree PROFILES: nothing is baked in.
 .SH CONFIGURATION
 Configuration is data, in three kinds, all KEY=VALUE and read literally.
 .SS Global
@@ -131,12 +131,12 @@ after how many CONSECUTIVE identical failures charon tries to unwedge a profile
 itself; 0 disables it. A profile can fail the same propagation on every pass
 indefinitely, because the attempt never succeeds so Unison never commits the
 archive so the next pass repeats it. When the same set of paths has failed this
-many COMPLETED passes running \(em counted PER PATH, so one path reaches the
-threshold on its own history whatever its neighbours do \(em charon drops those
+many COMPLETED passes running (counted PER PATH, so one path reaches the
+threshold on its own history whatever its neighbours do) charon drops those
 paths' transfer temps so the
 next pass starts clean: a stranded temp is itself enough to cause this, a temp
 is never content, and one that has had this many chances has demonstrably not
-helped. Where there is no temp to drop \(em a scan failure has none \(em it says
+helped. Where there is no temp to drop (a scan failure has none) it says
 so rather than claiming an intervention it cannot make, which is itself the
 signal that the fault needs a human. An interrupted or timed-out pass does not
 count towards the streak, so a genuinely resuming large transfer never reaches
@@ -212,7 +212,7 @@ With
 .B never
 a deletion is not propagated, so the far copy survives, but the path becomes an
 unresolved conflict and the profile FAILS every pass until a human settles it
-by hand \(em restoring the file, or deleting it on both sides. It does NOT
+by hand: restoring the file, or deleting it on both sides. It does NOT
 silently restore the missing copy.
 .PP
 charon ships
@@ -260,9 +260,9 @@ MEASURES them, with
 .BR "charon source probe" ,
 and derives the generated profile from the result.
 .PP
-Probing happens at CONFIG time only \(em at
+Probing happens at CONFIG time only: at
 .B install
-when a source has none, or on the explicit verb \(em never during a sync pass,
+when a source has none, or on the explicit verb: never during a sync pass,
 because a probe writes. A failed probe records NOTHING: an uncertain
 measurement is worse than none, because it becomes an assertion nobody
 re-checks. Traits live under
