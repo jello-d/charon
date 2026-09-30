@@ -14,7 +14,7 @@
 #   1. SWEEP=off REMOVES the units (not merely "stops enabling" them: a
 #      leftover enabled timer would keep deleting from the user's remote after
 #      they asked it not to) and check must report that state CLEAN.
-#   2. CRUMB_AGE_MIN is honoured from config, so the TIMED run honours it too --
+#   2. CRUMB_AGE_MIN is honoured from config, so the TIMED run honours it too,
 #      it used to be env-only and the generated unit baked nothing, so setting
 #      it in a shell changed nothing about what actually ran.
 . "$(dirname "$0")/harness_lib"

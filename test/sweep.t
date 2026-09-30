@@ -169,7 +169,7 @@ touch -d '30 days ago' "$OLD_M" "$OLD_C"
 
 CHARON_LIB_ONLY=1 . "$HERE/libexec/charon-sync"
 # extract_section reads the embedded templates out of "$_self", which the script
-# derives from $0 -- and $0 is THIS TEST when the script is sourced rather than
+# derives from $0, and $0 is THIS TEST when the script is sourced rather than
 # executed. Without this, render_prf below returns 0 having emitted a prf with
 # no template in it at all, and 2f would be asserting against empty output.
 _self=$HERE/libexec/charon-sync

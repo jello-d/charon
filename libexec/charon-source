@@ -324,7 +324,7 @@ _write_traits() {   # <source> <KEY=VALUE>...
   mkdir -p "$CHARON_TRAITS_DIR"
   _tf=$(traits_file "$_s")
   {
-    echo "# charon source traits for '$_s' -- MEASURED, do not hand-edit."
+    echo "# charon source traits for '$_s': MEASURED, do not hand-edit."
     echo "# Re-measure with: charon source probe $_s"
     echo "# The prf is derived from these, so a re-probe makes the live prf"
     echo "# stale and 'charon sync check' will say so until install re-renders."
@@ -350,7 +350,7 @@ do_show() {   # <source>
     echo "  traits:     $(traits_file "$_src")"
     sed -n 's/^\([A-Z_]*\)=/    \1=/p' "$(traits_file "$_src")"
   else
-    echo "  traits:     NONE -- run: charon source probe $_src"
+    echo "  traits:     NONE; run: charon source probe $_src"
   fi
   _m=$(source_get "$_src" MOUNT)
   if [ -d "$_m" ] && [ -n "$(ls -A "$_m" 2>/dev/null)" ]; then

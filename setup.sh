@@ -76,7 +76,7 @@ do_bootstrap() {
   fi
   mkdir -p "$PROFILES_DIR"
   cp "$_ex" "$PROFILES_DIR/example.conf"
-  echo "$PKG: seeded $PROFILES_DIR/example.conf -- edit it, then charon-sync"\
+  echo "$PKG: seeded $PROFILES_DIR/example.conf; edit it, then charon-sync"\
        "install"
 }
 
@@ -99,7 +99,7 @@ do_check() {
   # called this on PATH", which a DIFFERENT copy satisfies just as well as the
   # install being audited: a stale /usr/local/bin/charon, or the pkg clone's,
   # would report [OK] while this install rotted behind it. That shadowing is
-  # the failure the conventions ban outright, so assert against it here --
+  # the failure the conventions ban outright, so assert against it here:
   # installed at all, reachable, and the reachable one is THIS one.
   for _t in "$_root"/bin/*; do _n=$(basename "$_t")
     _want=$_bin/$_n

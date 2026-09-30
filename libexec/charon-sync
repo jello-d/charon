@@ -91,7 +91,7 @@ FAILED_DIR="$CHARON_STATE/failed"
 # WHY A CONFIG FILE AND NOT AN INSTALL-TIME ENV SEAM. CHARON_NOTIFY is
 # deliberately the latter: it is integrator policy, it is baked into the units,
 # and check audits the BAKED value by reading it back out of the artifact. That
-# trick CANNOT work for SWEEP, because when the sweep is off there IS NO UNIT --
+# trick CANNOT work for SWEEP, because when the sweep is off there IS NO UNIT,
 # so "no timer" would be ambiguous between "off on purpose" and "never
 # installed", and check could not assert either. A declaration that check can
 # read in BOTH states has to live outside the artifacts it governs.
@@ -541,7 +541,7 @@ failed_summary() {   # <profile> [now-epoch]
   # summary has to pick: the LONGEST streak, because that is the one that says
   # "this is a wedge, not a bad afternoon", and the OLDEST first-seen, because
   # that is how long the profile has actually been in trouble. Taking either
-  # from a single path would let a newly-joined path reset the whole story --
+  # from a single path would let a newly-joined path reset the whole story,
   # which is exactly the flapping-set bug, one level up.
   _fsl=$(mktemp) || return 0
   failed_records "$1" >"$_fsl"
@@ -1350,7 +1350,7 @@ setup_systemd_units() {
 }
 
 # Fast, resumable initial population of specific subtrees straight from the
-# remote API with rclone (parallel, idempotent, RESUMES after interruption --
+# remote API with rclone (parallel, idempotent, RESUMES after interruption,
 # unlike a killed unison-over-FUSE crawl, which loses all progress). Non-fatal.
 # Seed one profile's subtree, THROUGH THE PROVIDER. It used to run rclone
 # itself against the global remote and global cache, which made seeding
@@ -1452,7 +1452,7 @@ seed_full() {
 # outstanding transfer may be another box's. The gate is crumb_age_min(), whose
 # value the user owns (CRUMB_AGE_MIN in charon.conf, or the env).
 
-# --- the surgical half: clean up the instant a path is known to have settled --
+# --- the surgical half: clean up the instant a path is known to have ----------
 # The blind sweep below can only ask "is this old enough to be safe?", because
 # it has no idea whether unison still wants a given temp. After a pass, charon
 # DOES know, and this is where that knowledge gets spent.
@@ -1572,7 +1572,7 @@ unwedge_profile() {   # <profile>
   set -- "$1" "$(wedged_paths "$1" "$_uwa")"
   [ -n "$2" ] || return 0
   # NAME THE PATHS IN THE WARNING ITSELF. The per-path removals log at INFO, and
-  # charon-sync pins LOG_LEVEL=2, so in production those lines are SUPPRESSED --
+  # charon-sync pins LOG_LEVEL=2, so in production those lines are SUPPRESSED,
   # a warning saying only "2 paths" would be charon deleting from someone's
   # remote on its own initiative without saying which files. Bounded to three so
   # a wide fault cannot flood the journal.
@@ -1797,7 +1797,7 @@ gate_profile() {   # <profile> <service-name>
 #
 # STREAMED, NOT BUFFERED: the journal must keep seeing unison's warnings and
 # failures as they happen, not in one lump when a pass that may run for an hour
-# finally ends. So this is a pipeline, and `$?` after a pipeline is tee's --
+# finally ends. So this is a pipeline, and `$?` after a pipeline is tee's,
 # PIPESTATUS is not POSIX, which is why the status is smuggled out through a
 # file written INSIDE the pipeline. If the shell is killed before that write,
 # the file stays absent and this returns 125, which no unison status can be, so
@@ -1956,7 +1956,7 @@ do_status() {
         "case-$(traits_get "$_s" CASE)" \
         "$(traits_get "$_s" TIMES)" "${_tp%T*}"
     else
-      printf '  traits: NONE -- run: charon source probe %s\n' "$_s"
+      printf '  traits: NONE; run: charon source probe %s\n' "$_s"
     fi
 
     for _p in $(profile_names); do

@@ -178,7 +178,7 @@ _sync
 
 #### a SUBTREE with a space really does reconcile ####
 # Not hypothetical: the Drive this was built for contains "Google Earth". The
-# name VALIDATION added 2026-09-16 deliberately does not extend to subtrees --
+# name VALIDATION added 2026-09-16 deliberately does not extend to subtrees,
 # a profile NAME becomes a systemd unit and must be restricted, a subtree is
 # just a path and must not be. This asserts that boundary behaviourally rather
 # than trusting that the prf looked right: unison reads the rest of a prf line
@@ -204,7 +204,7 @@ _c install >/dev/null 2>&1 || fail "install failed (temps)"
 _sync
 [ -f "$T/cache/D/f.txt" ] || fail "the real file was not synced"
 [ -e "$T/cache/D/.unison.f.txt.abc123.unison.tmp" ] \
-  && fail "a stranded unison temp was REPLICATED -- the original bug is back" \
+  && fail "a stranded unison temp was REPLICATED: the original bug is back" \
   || :
 
 pass "real unison: delete policy, ignore, conflict, and temp exclusion"

@@ -7,7 +7,7 @@
 #   resolved_notify's stdout IS its return value, read by
 #   `$(resolved_notify)`. It also called log_info, which writes to STDOUT. So
 #   at LOG_LEVEL>=3 the baked notify path became
-#   "[INFO ] ... resolved to /home/jello/bin/x" + newline + the real path --
+#   "[INFO ] ... resolved to /home/jello/bin/x" + newline + the real path,
 #   MULTI-LINE. render_sync_unit feeds that to sed as a replacement, a
 #   multi-line sed replacement is an ERROR ("unterminated `s' command"), sed
 #   produced nothing, and install -- which redirected the renderer straight at

@@ -111,7 +111,7 @@ run_unison_guarded testprof >/dev/null 2>&1; rc=$?
 
 # --- the PROBE must be a throwaway, never the real command ---
 # It exists so a real non-zero is always unison's. If the probe ever wrapped
-# the actual run, a denial would be indistinguishable from a sync failure --
+# the actual run, a denial would be indistinguishable from a sync failure,
 # which is precisely the bug this whole file is about.
 _reset; _inhibit 0; _unison 0
 run_unison_guarded testprof >/dev/null 2>&1
@@ -129,7 +129,7 @@ _reset; rm -f "$T/bin/systemd-inhibit"; _unison 0
 # ABSENT AND DENIED ARE THE SAME BRANCH in charon, deliberately: the probe is
 # just "did that command succeed", so exit 1 (polkit) and exit 127 (not found)
 # are indistinguishable and both degrade. So this case asserts NOTHING that the
-# denied case above did not already prove, and mutation testing confirms it --
+# denied case above did not already prove, and mutation testing confirms it,
 # leaking the real tool back in still passes, because a denial looks the same.
 #
 # It is here to pin that equivalence, and the assertion that carries weight is

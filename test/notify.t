@@ -9,7 +9,7 @@
 #
 # That distinction is this project's most expensive lesson twice over: "a test
 # that asserts config is not a test of behaviour" (the prf looked perfect while
-# unison refused it for weeks), and the notify seam's own production defect --
+# unison refused it for weeks), and the notify seam's own production defect,
 # manifestor had CHARON_NOTIFY=intervention-required baked correctly into its
 # units while the command was not on the unit PATH, so EVERY sync failure
 # vanished: no flag, no reason in the journal, for days. A test of the baked

@@ -6,7 +6,7 @@
 # user could plausibly create, "My Docs.conf", became TWO phantom profiles:
 # charon generated and ARMED charon-sync-My.timer and charon-sync-Docs.timer,
 # generated NO prf for the real profile, exited 0, and then `check` reported
-# both phantoms [OK]. Every part of that is a convention violation at once --
+# both phantoms [OK]. Every part of that is a convention violation at once:
 # silent success on an error path, an armed timer for a profile that does not
 # exist, and a declared tree that never synced.
 #

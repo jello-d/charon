@@ -96,6 +96,6 @@ out=$(_c sync docs 2>&1); rc=$?
 printf '%s\n' "$out" | grep -qi "nas" \
   || fail "the refusal did not name the source ($out)"
 [ -f "$T/cache/Docs/keep.txt" ] \
-  || fail "cache data was destroyed by a vanished mount -- the guard failed"
+  || fail "cache data was destroyed by a vanished mount: the guard failed"
 
 pass "a real BYO mount: valid as a source, and refused when it vanishes"

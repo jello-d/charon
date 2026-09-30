@@ -148,7 +148,7 @@ never_content_excludes() {
 # WHY IT MATTERS, measured on a live fleet 2026-09-24: an integrator that reads
 # "non-zero" as drift schedules a repair for a runtime fault, runs it, finds the
 # check still failing, and reports "bad state or a bug". tackup's own summary
-# code concedes the point in a comment, "a check cannot tell the two apart" --
+# code concedes the point in a comment, "a check cannot tell the two apart",
 # and works around it by calling everything "findings". charon CAN tell them
 # apart, so it should say which.
 #

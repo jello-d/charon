@@ -10,7 +10,7 @@
 # Two things need holding down hard, because this is the first code here that
 # depends on unison's OUTPUT rather than its exit status:
 #
-#   1. THE PARSE, against real unison output, including a path with spaces --
+#   1. THE PARSE, against real unison output, including a path with spaces,
 #      every name that has ever caused trouble in this project has had spaces.
 #   2. THE TRUST GATE. A list is only complete if unison reached its own
 #      verdict (exit 0/1/2). Exit 3 is "fatal error OR EXECUTION INTERRUPTED"
@@ -265,7 +265,7 @@ _a1=$(_since docs alpha.txt)
 #
 # BACKDATED first, so the assertion does not depend on the clock moving. Within
 # one second a first-seen that is silently RESET is identical to one carried
-# forward, and the first version of this check passed for exactly that reason --
+# forward, and the first version of this check passed for exactly that reason,
 # measured, by mutation.
 sed -i 's/^FAILED=1 [0-9]* alpha.txt$/FAILED=1 1000000000 alpha.txt/' \
   "$(failed_file docs)"
@@ -378,7 +378,7 @@ rm -f "$(failed_file docs)"
   || fail "report_failed_paths printed something with no record"
 
 # AND IT MUST FIRE UNDER A GREEN VERDICT TOO. unison exits 2 only for a
-# TRANSFER failure, so a unit can be Result=success while paths sit stuck --
+# TRANSFER failure, so a unit can be Result=success while paths sit stuck,
 # and a [OK] line with a stuck path hidden under it is exactly the
 # presence-is-not-function trap this project keeps rediscovering. A stub that
 # reports a healthy unit is the only way to reach that branch.
@@ -793,7 +793,7 @@ esac
 #
 # The record is built DIRECTLY so the worst and oldest are deliberately NOT
 # last. Driving it through record_failures put them last by accident (paths are
-# stored sorted), and a summary that simply took the final record passed --
+# stored sorted), and a summary that simply took the final record passed,
 # measured, by mutation, twice.
 rm -rf "$T/state/failed"; mkdir -p "$T/state/failed"
 _now=$(date +%s)
