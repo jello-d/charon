@@ -16,7 +16,20 @@ harness_init() {   # <name>
   TEST_NAME=$1
   HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
   T=$(mktemp -d)
-  trap 'rm -rf "$T"' EXIT INT TERM
+  # CHECKED, THEN BAKED IN AS A LITERAL, per the standing rule that `rm -rf`
+  # never runs on a variable expansion. A single-quoted trap defers the
+  # expansion to FIRE TIME, which is usually an error path, so whatever the
+  # variable holds by then is what goes: that exact shape is how a sibling
+  # project's harness deleted its own working tree. Now `trap` prints the one
+  # path that can ever be removed and no later assignment can move it.
+  case $T in
+  /*/*) ;;
+  *) printf 'harness_init: refusing to arm cleanup for T=[%s]\n' "$T" >&2
+     exit 1 ;;
+  esac
+  _hi_c="'$T'"
+  # shellcheck disable=SC2064  # expanding NOW is the point; see above
+  trap "rm -rf -- $_hi_c" EXIT INT TERM
 }
 pass() { printf 'ok   %s%s\n' "$TEST_NAME" "${1:+ ($1)}"; }
 fail() { printf 'FAIL %s: %s\n' "$TEST_NAME" "$1" >&2; exit 1; }
