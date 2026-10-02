@@ -375,6 +375,16 @@ Every non-clean verdict is still non-zero, so a caller that only tests for
 success is unaffected.
 .SH FILES
 .TP
+.I ~/.local/share/charon/
+the installed payload: a self-contained COPY of charon
+.RI ( bin/ ", " libexec/ ", " share/ " and " man/
+inside it), which
+.I ~/.local/bin/charon
+links into.
+.B "setup.sh install"
+stages a new one beside it and swaps it in, so the installed command does not
+depend on the source tree it was installed from still being there.
+.TP
 .I ~/.config/charon/charon.conf
 optional global settings (SWEEP, CRUMB_AGE_MIN).
 .TP
