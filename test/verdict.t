@@ -41,7 +41,7 @@ mkdir -p "$CFG/profiles.d" "$CFG/sources.d" "$T/st" "$T/uni" "$T/.cache" \
 # ----------------------------------------------------------------- part 1 ----
 # THE MERGE RULE, on its own. It is the contract's load-bearing half and it has
 # exactly one definition, shared by both impls and the dispatcher.
-CHARON_LIB_ONLY=1 . "$HERE/libexec/common_lib"
+CHARON_LIB_ONLY=1 . "$HERE/lib/common_lib"
 
 [ "$EX_DRIFT" = 1 ] || fail "EX_DRIFT is $EX_DRIFT, not 1"
 [ "$EX_FAULT" = 2 ] || fail "EX_FAULT is $EX_FAULT, not 2"

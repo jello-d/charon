@@ -42,7 +42,7 @@ _setup install >/dev/null || fail "install errored"
 # resolves its own real path and reads ../libexec and ../share/charon from
 # there, so this nesting is the load-bearing part of the layout.
 for _f in bin/charon libexec/charon-sync libexec/charon-mount \
-          libexec/charon-source libexec/common_lib \
+          libexec/charon-source lib/common_lib \
           share/charon/example.conf share/charon/example-source.conf \
           share/charon/example-charon.conf man/man1/charon.1; do
   [ -f "$PAY/$_f" ] || fail "payload is missing $_f"
@@ -87,7 +87,7 @@ _setup install >/dev/null || fail "a second install errored"
 SRC=$T/src
 mkdir -p "$SRC"
 cp "$HERE/setup.sh" "$SRC/"
-for _d in bin libexec share man; do cp -R "$HERE/$_d" "$SRC/"; done
+for _d in bin lib libexec share man; do cp -R "$HERE/$_d" "$SRC/"; done
 rm -rf -- "$PREFIX"
 sh "$SRC/setup.sh" install >/dev/null || fail "install from the copy errored"
 rm -rf -- "$SRC"
@@ -181,10 +181,10 @@ mv "$T/pay.parked" "$PAY"
 # the filename. So the assertion was being satisfied by a different finding.
 # Found by mutation; it is the "grep for the project's own wording" rule one
 # level in, where two of charon's own checks can answer for each other.
-rm -f "$PAY/libexec/common_lib"
-ln -sfn "$HERE/libexec/common_lib" "$PAY/libexec/common_lib"
+rm -f "$PAY/lib/common_lib"
+ln -sfn "$HERE/lib/common_lib" "$PAY/lib/common_lib"
 _broken "a payload file that is a link into the source" \
-        'payload is missing libexec/common_lib'
+        'payload is missing lib/common_lib'
 # AND THE REPAIR IS ASSERTED HERE, not left to a later case, because this is
 # the state that catches a stage which FILLS the payload in place instead of
 # replacing it: `cp` over a symlink FOLLOWS it and writes THROUGH into the
@@ -193,7 +193,7 @@ _setup install >/dev/null
 _chk || fail "check is not green after reinstalling over a hollowed payload;
   a stage that copies INTO the live payload writes through its links instead
   of replacing them: $(cat "$T/c.out")"
-[ -L "$PAY/libexec/common_lib" ] \
+[ -L "$PAY/lib/common_lib" ] \
   && fail "reinstall left the payload's common_lib a symlink" || :
 
 # THE BIN LINK REPOINTED at the source: each half is asserted separately,
@@ -274,7 +274,7 @@ _chk || fail "check is not green after migrating from the old layout:
 # The source tree must come through it untouched: the old payload path was a
 # link INTO it, so a `cp` that followed that link would have written into the
 # repo this test is running from.
-for _f in share/charon/example.conf libexec/common_lib bin/charon; do
+for _f in share/charon/example.conf lib/common_lib bin/charon; do
   [ -f "$HERE/$_f" ] || fail "the migration damaged the source tree ($_f)"
 done
 [ -e "$HERE/share/charon/bin" ] \

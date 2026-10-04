@@ -119,14 +119,14 @@ _payload_stage() {
   esac
   rm -rf -- "$_ps_new" "$_ps_old"
   mkdir -p "$_ps_new" || { bad "could not create $_ps_new"; return 1; }
-  for _d in bin libexec share man; do
+  for _d in bin lib libexec share man; do
     [ -d "$_root/$_d" ] || continue
     cp -R "$_root/$_d" "$_ps_new/" || { bad "could not copy $_d"; return 1; }
   done
   # The payload is only useful if the command and what it self-locates are all
   # in it, so assert that before anything is swapped: a half-copied tree must
   # fail here, where the live install is still untouched.
-  for _f in bin/$PKG libexec/common_lib share/$PKG/example.conf; do
+  for _f in bin/$PKG lib/common_lib share/$PKG/example.conf; do
     [ -f "$_ps_new/$_f" ] && continue
     bad "staged payload has no $_f"; rm -rf -- "$_ps_new"; return 1
   done
@@ -226,7 +226,7 @@ check_payload() {
     bad "no payload tree at $_pay: reinstall $PKG"
   else
     _cpr=0
-    for _f in bin/$PKG libexec/common_lib share/$PKG/example.conf \
+    for _f in bin/$PKG lib/common_lib share/$PKG/example.conf \
               share/$PKG/example-source.conf; do
       if [ -f "$_pay/$_f" ] && [ ! -L "$_pay/$_f" ]; then continue; fi
       bad "payload is missing $_f (or it is a link): $_pay/$_f"; _cpr=1

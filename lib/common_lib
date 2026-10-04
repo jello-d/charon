@@ -12,7 +12,7 @@
 # obvious from the directory it sits in, and it would be a lie the day any of
 # this is rewritten.
 #
-# Sourced early via self-location (../libexec/common_lib); set LOG_LEVEL after.
+# Sourced early via self-location (../lib/common_lib); set LOG_LEVEL after.
 #
 # The remote name, the mount path, and the local cache are ONE fact each, shared
 # here so a drift cannot make sync a different tree than mount mounts. All

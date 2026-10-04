@@ -65,11 +65,12 @@
 # logger + CHARON_REMOTE/MOUNT/CACHE/CONFIG, shared with charon-mount (a sibling
 # in libexec). Reached via the `charon` dispatcher, or run directly.
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-# Where the sibling impls and common_lib live. Normally alongside this file;
+# Where the sibling impls live (alongside this file); common_lib is in ../lib.
 # CHARON_LIBEXEC overrides it so a unit test can SOURCE this file, where $0 is
 # the test's shell rather than the script and self-location cannot work.
 CHARON_LIBEXEC=${CHARON_LIBEXEC:-$(dirname "$_self")}
-. "$CHARON_LIBEXEC/common_lib" 2>/dev/null || {
+CHARON_LIB=${CHARON_LIB:-$CHARON_LIBEXEC/../lib}
+. "$CHARON_LIB/common_lib" 2>/dev/null || {
   echo "charon-sync: cannot source common_lib" >&2; exit 1; }
 
 UNISON_DIR="${UNISON_DIR:-$HOME/.unison}"

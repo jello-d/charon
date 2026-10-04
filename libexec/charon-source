@@ -29,11 +29,12 @@
 
 : "${LOG_LEVEL:=3}"    # 1=ERROR; 2=WARN; 3=INFO; 4=TRACE (environment wins)
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-# Where the sibling impls and common_lib live. Normally alongside this file;
+# Where the sibling impls live (alongside this file); common_lib is in ../lib.
 # CHARON_LIBEXEC overrides it so a unit test can SOURCE this file, where $0 is
 # the test's shell rather than the script and self-location cannot work.
 CHARON_LIBEXEC=${CHARON_LIBEXEC:-$(dirname "$_self")}
-. "$CHARON_LIBEXEC/common_lib" 2>/dev/null || {
+CHARON_LIB=${CHARON_LIB:-$CHARON_LIBEXEC/../lib}
+. "$CHARON_LIB/common_lib" 2>/dev/null || {
   echo "charon-source: cannot source common_lib" >&2; exit 1; }
 
 PROFILES_DIR="$CHARON_CONFIG/profiles.d"

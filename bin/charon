@@ -23,7 +23,8 @@
 # migrate on its own schedule.
 set -eu
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-_lib=$(dirname "$_self")/../libexec
+_libexec=$(dirname "$_self")/../libexec
+_lib=$(dirname "$_self")/../lib
 
 usage() {
   cat <<EOF
@@ -49,8 +50,8 @@ See charon(1).
 EOF
 }
 
-_sync() { APP_NAME="charon sync" exec "$_lib/charon-sync" "$@"; }
-_mount() { APP_NAME="charon mount" exec "$_lib/charon-mount" "$@"; }
+_sync() { APP_NAME="charon sync" exec "$_libexec/charon-sync" "$@"; }
+_mount() { APP_NAME="charon mount" exec "$_libexec/charon-mount" "$@"; }
 
 # `charon sync X`: X is a PROFILE in the new surface, but the old surface put a
 # MODE there. Treat the known modes as the legacy form so an old unit, script or
@@ -79,8 +80,8 @@ case "${1:-}" in
            # branch, which ends in exit, so nothing it defines can reach the
            # commands the other branches exec.
            _sc=0; _mc=0
-           APP_NAME="charon sync" "$_lib/charon-sync" check "$@" || _sc=$?
-           APP_NAME="charon mount" "$_lib/charon-mount" check || _mc=$?
+           APP_NAME="charon sync" "$_libexec/charon-sync" check "$@" || _sc=$?
+           APP_NAME="charon mount" "$_libexec/charon-mount" check || _mc=$?
            # shellcheck disable=SC1091
            . "$_lib/common_lib"
            merge_verdict "$_sc" "$_mc" || exit $?
@@ -105,20 +106,22 @@ case "${1:-}" in
            # units, and then never mounted, a promise the config accepted and
            # nothing kept.
            _any=
-           for _s in $("$_lib/charon-source" list); do
-             [ "$("$_lib/charon-source" provider "$_s")" = rclone ] || continue
+           for _s in $("$_libexec/charon-source" list); do
+             [ "$("$_libexec/charon-source" provider "$_s")" = rclone ] \
+               || continue
              _any=y
              CHARON_SOURCE=$_s APP_NAME="charon mount" \
-               "$_lib/charon-mount" install || exit $?
+               "$_libexec/charon-mount" install || exit $?
            done
            [ -n "$_any" ] \
              || echo "charon: no rclone-backed source; nothing to mount"
            _sync install ;;
   uninstall) shift
            # sync first, then the source it depended on
-           APP_NAME="charon sync" "$_lib/charon-sync" uninstall || exit $?
+           APP_NAME="charon sync" "$_libexec/charon-sync" uninstall || exit $?
            _mount uninstall ;;
-  source)  shift; APP_NAME="charon source" exec "$_lib/charon-source" "$@" ;;
+  source)  shift; APP_NAME="charon source" \
+             exec "$_libexec/charon-source" "$@" ;;
 
   # --- kept working: the older spellings ---
   mount)   shift; _mount "$@" ;;
