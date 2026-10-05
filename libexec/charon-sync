@@ -214,6 +214,12 @@ modes:
                 settle). Only temps older than CRUMB_AGE_MIN minutes, since a
                 recent one may be a live resume point. -n/--dry-run lists what
                 it would remove and deletes nothing.
+  audit [source]
+                ask the REMOTE whether any path holds more than one object, or
+                any object has no content stream. A duplicate name makes the
+                mount non-deterministic and MANUFACTURES conflicts on every
+                node. Records what it finds; 'check' reports that for free
+                rather than paying for a listing itself.
   install       install Unison profiles, systemd units/timers, and seed
   uninstall     remove those units/timers/profiles (NOT the cache or config)
   status        what is true now: sources, profiles, last runs, next runs
@@ -2314,6 +2320,76 @@ check_twins() {
   return 0
 }
 
+# The subtrees every profile of <source> reconciles, space separated. The audit
+# needs these and charon-source cannot read profiles (that is this half's job),
+# so the plumbing goes through an env var rather than teaching the provider
+# about profile config.
+source_subtrees() {   # <source>
+  for _ssp in $(profile_names); do
+    [ "$(profile_source_name "$_ssp")" = "$1" ] || continue
+    _sst=$(profile_subtree "$_ssp"); [ -n "$_sst" ] && printf '%s\n' "$_sst"
+  done | sort -u | tr '\n' ' '
+}
+
+# Audit each rclone-backed source's remote. Reports; the verdict is the worst of
+# the sources, and a FAULT because charon cannot collapse a duplicate itself.
+do_audit() {   # [source]
+  _aurc=0; _auany=
+  for _aus in ${1:-$(source_names)}; do
+    _aup=$("$CHARON_LIBEXEC/charon-source" provider "$_aus")
+    [ "$_aup" = rclone ] || continue
+    _auany=y
+    CHARON_AUDIT_SUBTREES="$(source_subtrees "$_aus")" \
+      "$CHARON_LIBEXEC/charon-source" audit "$_aus" \
+      || _aurc=$(worse_of "$_aurc" "$?")
+  done
+  [ -n "$_auany" ] \
+    || log_info "audit: no rclone-backed source; nothing to audit"
+  return "$_aurc"
+}
+
+# Read what the LAST audit found. Free: no remote call, the same shape as
+# reading a unit's last-run result rather than re-running the unit.
+#
+# A duplicate name on the remote is a FAULT, not drift: it manufactures
+# conflicts on every node and charon cannot collapse it (that means choosing
+# which object survives, and on a file this account does not own the API
+# refuses outright). Never audited is a WARN, because an absent measurement is
+# not evidence of a problem and an install cannot create one either.
+check_audit() {
+  _carc=0; _caany=
+  for _cas in $(source_names); do
+    _cap=$("$CHARON_LIBEXEC/charon-source" provider "$_cas")
+    [ "$_cap" = rclone ] || continue
+    _caany=y
+    _caf="$CHARON_STATE/audit/$_cas"
+    if [ ! -f "$_caf" ]; then
+      echo "  [WARN] source '$_cas': the remote has never been audited for"\
+           "duplicate names (run '${APP_NAME%% *} audit')"
+      continue
+    fi
+    # COUNT the detail lines; the record carries no summary to disagree with.
+    _cad=$(grep -c '^DUPE=' "$_caf" 2>/dev/null) || _cad=0
+    _can=$(grep -c '^NOCONTENT=' "$_caf" 2>/dev/null) || _can=0
+    _cat=$(sed -n 's/^AUDITED=//p' "$_caf" | head -1)
+    if [ "$_cad" = 0 ] && [ "$_can" = 0 ]; then
+      echo "  [OK]   source '$_cas': remote had no duplicate names when last"\
+           "audited $(human_age "${_cat:-0}" "$(date +%s)")"
+      continue
+    fi
+    fail_fault "source '$_cas': the remote had $_cad duplicated path(s) and"\
+         "$_can contentless object(s) when last audited"\
+         "($(human_age "${_cat:-0}" "$(date +%s)")). A duplicate name"\
+         "makes"\
+         "the mount non-deterministic and manufactures conflicts on EVERY"\
+         "node. charon cannot collapse it: run"\
+         "'rclone dedupe --dedupe-mode largest <remote>:<subtree>'."
+    _carc=1
+  done
+  [ -n "$_caany" ] || return 0
+  return "$_carc"
+}
+
 check_crumbs() {
   # An age charon REFUSES to act on is drift a human must fix, not litter to
   # shrug at: with a bad CRUMB_AGE_MIN nothing is ever swept, silently.
@@ -2410,6 +2486,7 @@ do_check() {
   # refuses to act on is: nothing would ever be swept, and silently.
   check_crumbs || _rc=1
   check_twins  || _rc=1
+  check_audit  || _rc=$(worse_of "$_rc" "$?")
   check_notify_seam || _rc=1
   # The VERDICT, not just "did anything fail". _rc is passed only so a finding
   # that failed without classifying itself is caught loudly.
@@ -2450,6 +2527,7 @@ case "$MODE" in
   seed)      seed_priority ;;
   seed-full) seed_full ;;
   sweep)     shift; do_sweep "$@" ;;
+  audit)     shift; do_audit "$@" ;;
   install)   do_install ;;
   uninstall) do_uninstall ;;
   config|status) do_status ;;
@@ -2528,6 +2606,19 @@ Environment=CHARON_REMOTE=@CHARON_REMOTE@
 # the same reasoning as the sync unit's own SuccessExitStatus.
 SuccessExitStatus=75
 ExecStart=%h/.local/bin/charon sweep
+# AUDIT THE REMOTE on the same daily tick, because the thing it looks for is
+# what manufactured 283 conflicts across three nodes on 2026-10-04 and nothing
+# was watching for it. It rides this timer rather than getting its own: one
+# listing costs seconds, daily is far more often than a duplicate appears, and a
+# second timer is a second thing to be enabled, diffed and explained.
+#
+# `-` PREFIXED ON PURPOSE. The audit exits non-zero when it FINDS something, and
+# an unprefixed failure would latch this unit failed until a human fixed the
+# remote, which is the permanently-red-unit noise this project removes wherever
+# it appears. The finding is not lost: it is written to the audit record, and
+# `charon check` turns it into a FAULT, which is the verdict an integrator
+# already consumes.
+ExecStart=-%h/.local/bin/charon audit
 __SECTION_END__ unit:charon-sweep.service
 
 

@@ -41,12 +41,13 @@ PROFILES_DIR="$CHARON_CONFIG/profiles.d"
 
 usage() {
   cat <<EOF
-usage: $APP_NAME <list|show|probe|status|health|seed|up|down> [source]
+usage: $APP_NAME <list|show|probe|audit|status|health|seed|up|down> [source]
 
   list            configured sources, plus the implicit 'default'
   provider <name> print which provider backs it
   show <name>     its config, its measured traits, and whether it is live
   probe <name>    measure the backend traits and record them (writes!)
+  audit <name>    ask the remote for duplicate names / contentless objects
   status <name>   is it available right now?  0 up / 1 down
   health <name>   deep probe:  0 online / 2 offline / 3 throttled
   seed <name> <subtree> <dest>   bulk-populate, if the provider can
@@ -335,6 +336,136 @@ _write_traits() {   # <source> <KEY=VALUE>...
   log_info "recorded traits: $_tf"
 }
 
+# AUDIT THE REMOTE FOR THINGS THAT MANUFACTURE CONFLICTS -----------------------
+#
+# WHY THIS EXISTS. On 2026-10-04 the Drive behind this fleet accumulated 539
+# paths each holding TWO objects: the real file, and one whose size rclone
+# reports as -1, meaning NO CONTENT STREAM (an abandoned upload, not a native
+# gdoc; the MimeType was correct on both). Drive permits duplicate names, and a
+# FUSE mount must present ONE object per name, so with a duplicate the file's
+# apparent content FLIPS between passes and unison correctly reads both replicas
+# as diverged. That manufactured 283 conflicts across three nodes in a day, and
+# charon was blind to every bit of it: nothing in any check asks the remote
+# whether a path has two objects.
+#
+# IT IS A FAULT, NOT DRIFT: charon cannot fix it. Collapsing duplicates means
+# choosing which object survives, which is `rclone dedupe` plus a human, and on
+# a shared file it may be refused outright (403, measured on a file this account
+# does not own). So this REPORTS precisely and names the remedy.
+#
+# DELIBERATELY NOT IN `check`: one listing of this Drive costs ~3s against
+# check's whole 0.7s budget, and check's value is that it is cheap enough to run
+# constantly. The audit writes a RECORD instead, and check reads that for free,
+# the same shape as reading a unit's last-run result rather than re-running it.
+audit_file() { printf '%s/audit/%s' "$CHARON_STATE" "$1"; }
+
+do_audit() {   # <source>
+  case "$(source_provider "$1")" in
+    rclone) : ;;
+    *)
+      log_info "source '$1' has PROVIDER=none: no remote API to audit, so"\
+               "duplicate-name detection does not apply"
+      return 0 ;;
+  esac
+  _r=$(source_get "$1" REMOTE)
+  [ -n "$_r" ] || { log_error "source '$1' is PROVIDER=rclone but has no"\
+                              "REMOTE"; return 2; }
+  command -v "$RCLONE_BIN" >/dev/null 2>&1 \
+    || { log_error "'$RCLONE_BIN' not found; cannot audit the remote"
+         return 2; }
+  command -v python3 >/dev/null 2>&1 \
+    || { log_error "python3 not found; cannot audit the remote"; return 2; }
+
+  # Scope to the SUBTREES actually configured, not the whole remote: charon has
+  # no business reporting on a tree it does not manage, and the cost scales with
+  # what it lists.
+  _asub=$(audit_subtrees "$1")
+  if [ -z "$_asub" ]; then
+    log_info "source '$1': no profile names a subtree of it; nothing to audit"
+    return 0
+  fi
+  _af=$(audit_file "$1")
+  mkdir -p "${_af%/*}" || return 2
+  _at=$(mktemp) || return 2
+  _arc=0
+  printf 'AUDITED=%s\nREMOTE=%s\n' "$(date +%s)" "$_r" >"$_at"
+  for _as in $_asub; do
+    "$RCLONE_BIN" lsjson "${_r}:$_as" --recursive --files-only --no-modtime \
+      2>/dev/null | audit_report "$_as" >>"$_at" || _arc=2
+  done
+  # NO SUMMARY COUNTS IN THE RECORD. The first version wrote `NOCONTENT=<count>`
+  # alongside `NOCONTENT=<path>` detail lines, so the same key meant two things
+  # and a reader taking the first match got a PATH where it wanted a number
+  # (printed as "had 1 duplicated path(s) and Documents/... contentless
+  # object(s)"). Readers COUNT the detail lines instead, which also removes any
+  # way for a summary to disagree with what it summarises.
+  _ad=$(grep -c '^DUPE=' "$_at" 2>/dev/null) || _ad=0
+  _an=$(grep -c '^NOCONTENT=' "$_at" 2>/dev/null) || _an=0
+  # Replace the live record only once it is complete, so a failed listing leaves
+  # yesterday's answer rather than an empty one that reads as "all clear".
+  if [ "$_arc" = 0 ]; then
+    mv -f "$_at" "$_af"
+  else
+    rm -f "$_at"
+    log_error "source '$1': a remote listing failed; the previous audit record"\
+              "is unchanged rather than replaced with a partial one"
+    return 2
+  fi
+  if [ "$_ad" = 0 ] && [ "$_an" = 0 ]; then
+    log_info "source '$1': remote clean, no duplicate names, no contentless"\
+             "objects (across: $(echo "$_asub" | tr '\n' ' '))"
+    return 0
+  fi
+  log_error "source '$1': the remote has $_ad duplicated path(s) and $_an"\
+            "object(s) with no content stream."
+  log_error "A duplicate name makes the mount non-deterministic and"\
+            "MANUFACTURES conflicts on every node."
+  log_error "Remedy (charon will not do this for you, it means choosing which"\
+            "object survives):"
+  log_error "  rclone dedupe --dedupe-mode largest ${_r}:<subtree>"
+  log_error "Verify first with --dry-run, and note a file you do not OWN"\
+            "returns 403 and must be fixed from the Drive UI."
+  sed -n 's/^DUPE=/  dup: /p;s/^NOCONTENT=/  no content: /p' "$_af" | head -10
+  return 1
+}
+
+# The subtrees of <source> that some profile actually reconciles, deduplicated
+# to their shortest common prefixes so two profiles under one tree are listed
+# once. charon-source cannot read profiles (that is the sync half), so the
+# caller passes them in via CHARON_AUDIT_SUBTREES, and the bare verb falls back
+# to the whole remote root.
+audit_subtrees() {   # <source>
+  if [ -n "${CHARON_AUDIT_SUBTREES:-}" ]; then
+    printf '%s\n' "$CHARON_AUDIT_SUBTREES" | tr ' ' '\n' | sed '/^$/d' | sort -u
+    return 0
+  fi
+  printf '%s\n' ""
+}
+
+# Read an rclone lsjson array on stdin; emit DUPE=/NOCONTENT= lines. Kept as its
+# own function so a test can feed it canned JSON and never touch a remote.
+audit_report() {   # <subtree-prefix>
+  CHARON_AUDIT_PREFIX="$1" python3 -c '
+import json, os, sys
+from collections import defaultdict
+pre = os.environ.get("CHARON_AUDIT_PREFIX", "")
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    sys.exit(2)
+by = defaultdict(list)
+for f in rows:
+    by[f.get("Path", "")].append(f)
+for path, objs in sorted(by.items()):
+    full = pre + "/" + path if pre else path
+    if len(objs) > 1:
+        print("DUPE=%d %s" % (len(objs), full))
+    for o in objs:
+        if o.get("Size", 0) == -1:
+            print("NOCONTENT=%s" % full)
+'
+}
+
 do_show() {   # <source>
   _src=$1
   echo "source '$_src'"
@@ -406,6 +537,7 @@ case "${1:-}" in
   seed)   _need "${2:-}"; do_seed "$2" "${3:-}" "${4:-}" ;;
   show)  _need "${2:-}"; do_show "$2" ;;
   probe) _need "${2:-}"; do_probe "$2" ;;
+  audit) _need "${2:-}"; do_audit "$2" ;;
   up)    _need "${2:-}"; do_updown up "$2" ;;
   down)  _need "${2:-}"; do_updown down "$2" ;;
   ""|-h|--help|help) usage ;;

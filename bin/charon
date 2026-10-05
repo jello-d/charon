@@ -93,6 +93,7 @@ case "${1:-}" in
              *) _sync seed-full ;;
            esac ;;
   sweep)   shift; _sync sweep "$@" ;;
+  audit)   shift; _sync audit "$@" ;;
   install) shift
            # The MOUNT half only for sources charon actually mounts. It used to
            # run unconditionally, so a setup whose only source is PROVIDER=none
