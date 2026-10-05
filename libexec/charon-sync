@@ -819,6 +819,30 @@ check_config_sanity() {
   # reading as though a skipped profile were merely healthy-and-absent.
   check_names || _cs=1
   for _s in $(source_names); do
+    # A SOURCE THAT NAMES A REMOTE AND NO PROVIDER IS INCOHERENT, and it fails
+    # in a way that points at the wrong thing. REMOTE is provider config for
+    # rclone, and PROVIDER defaults to `none` (bring-your-own) when the line is
+    # absent, so the REMOTE is silently IGNORED: charon installs no mount for
+    # the source, nothing brings the tree up, and the first pass faults with
+    # "source 'x' or its cache is not ready". The cause is a missing line in a
+    # config file and the message is about a mount. Say the real thing.
+    #
+    # The implicit `default` is unaffected: it derives PROVIDER=rclone, which is
+    # why a single-remote install needs no sources.d file at all.
+    # THROUGH THE SEAM, like the other five call sites: source_provider() lives
+    # in charon-source and is NOT in this file's scope, and `dash -n` cannot see
+    # an undefined function, so the first version of this line parsed fine and
+    # would have failed only at run time.
+    if [ -n "$(source_get "$_s" REMOTE)" ] \
+       && [ "$("$CHARON_LIBEXEC/charon-source" provider "$_s")" = none ]; then
+      fail_fault "source '$_s' declares"\
+           "REMOTE='$(source_get "$_s" REMOTE)'"\
+           "but no PROVIDER, so it is treated as"\
+           "bring-your-own and that REMOTE is IGNORED. Nothing will mount it."\
+           "Add PROVIDER=rclone, or drop the REMOTE line if something else"\
+           "owns that tree."
+      _cs=1
+    fi
     _m=$(source_get "$_s" MOUNT); _c=$(source_get "$_s" CACHE_ROOT)
     [ -n "$_m" ] && [ -n "$_c" ] || continue
     if paths_overlap "$_m" "$_c"; then

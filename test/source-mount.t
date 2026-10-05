@@ -96,4 +96,84 @@ env PATH="$T/bin:/usr/bin:/bin" HOME="$T" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
   CHARON_REMOTE=testremote sh "$HERE/bin/charon" mount install >/dev/null 2>&1 \
   || fail "mount install needed privilege it should not have needed"
 
-pass "mount and sync resolve one source; the instance names it; no sudo"
+#### THE SOURCE LIFECYCLE: `charon source up|down`, which NOTHING ran ####
+# `charon source down <src>` is the mount unit's own ExecStop, so EVERY teardown
+# goes through it, and no test had ever executed it: three tests asserted the
+# unit TEXT says `charon source up %i` and stopped there. The 2026-09-18
+# incident was a teardown unmounting a live tree, which is this code path.
+#
+# The dispatch is observed through CHARON_LIBEXEC, pointed at a stub
+# charon-mount that records its argv. That tests do_updown's ROUTING, which is
+# the part with branches, rather than re-testing charon-mount's unmount.
+mkdir -p "$T/stub"
+ln -sf "$HERE/libexec/charon-source" "$T/stub/charon-source"
+cat > "$T/stub/charon-mount" <<EOF
+#!/bin/sh
+echo "charon-mount \$* [SRC=\${CHARON_SOURCE:-}]" >> "$T/mount.log"
+exit 0
+EOF
+chmod +x "$T/stub/charon-mount"
+_src() {
+  env PATH="$T/bin:/usr/bin:/bin" HOME="$T" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    CHARON_REMOTE=testremote CHARON_LIBEXEC="$T/stub" CHARON_LIB="$HERE/lib" \
+    sh "$T/stub/charon-source" "$@" 2>&1
+}
+cat > "$CFG/sources.d/rc.conf" <<EOF
+PROVIDER=rclone
+REMOTE=testremote
+MOUNT=$T/elsewhere/tree
+CACHE_ROOT=$T/elsewhere/cache
+EOF
+cat > "$CFG/sources.d/byo.conf" <<EOF
+PROVIDER=none
+MOUNT=$T/elsewhere/tree
+CACHE_ROOT=$T/elsewhere/cache
+EOF
+
+: > "$T/mount.log"
+_src up rc >/dev/null 2>&1
+grep -q 'charon-mount run \[SRC=rc\]' "$T/mount.log" \
+  || fail "source up did not reach the mount with its own source:
+$(cat "$T/mount.log")"
+
+: > "$T/mount.log"
+_src down rc >/dev/null 2>&1
+grep -q 'charon-mount stop \[SRC=rc\]' "$T/mount.log" \
+  || fail "source down did not reach the mount with 'stop'. This is the mount
+unit's ExecStop, so a teardown would do nothing: $(cat "$T/mount.log")"
+
+# THE CHARTER PROMISE: for PROVIDER=none, "charon will not mount or unmount it".
+# Something else owns that tree (fstab, autofs, NFS, a USB disk), so touching it
+# is a data-availability bug and exactly the shape of the 2026-09-18 incident.
+: > "$T/mount.log"
+out=$(_src down byo); rc=$?
+[ -s "$T/mount.log" ] \
+  && fail "charon tried to UNMOUNT a PROVIDER=none tree. Something else owns
+that tree; charon promises never to touch it:
+$(cat "$T/mount.log")"
+[ "$rc" = 0 ] \
+  || fail "down on a BYO source exited $rc; there is nothing to do and that is
+not a failure ($out)"
+printf '%s\n' "$out" | grep -qi 'PROVIDER=none' \
+  || fail "down on a BYO source said nothing about why it did nothing ($out)"
+: > "$T/mount.log"
+_src up byo >/dev/null 2>&1
+[ -s "$T/mount.log" ] \
+  && fail "charon tried to MOUNT a PROVIDER=none tree: $(cat "$T/mount.log")"
+
+# an UNKNOWN provider must refuse, not silently no-op
+printf 'PROVIDER=weird\nMOUNT=%s/elsewhere/tree\n' "$T" \
+  > "$CFG/sources.d/odd.conf"
+printf 'CACHE_ROOT=%s/elsewhere/cache\n' "$T" >> "$CFG/sources.d/odd.conf"
+: > "$T/mount.log"
+out=$(_src up odd); rc=$?
+[ "$rc" = 0 ] \
+  && fail "an unknown PROVIDER was accepted; an unrecognised provider must
+refuse rather than quietly do nothing ($out)"
+[ -s "$T/mount.log" ] \
+  && fail "an unknown PROVIDER still reached the rclone mount:
+$(cat "$T/mount.log")"
+rm -f "$CFG/sources.d/odd.conf" "$CFG/sources.d/rc.conf"
+rm -f "$CFG/sources.d/byo.conf"
+
+pass "mount and sync resolve one source; up/down route per provider; no sudo"

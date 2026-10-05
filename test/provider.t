@@ -119,6 +119,31 @@ cp "$CFG/profiles.d/docs.conf" "$CFG/profiles.d/dup.conf"
 _c check 2>&1 | grep -qi 'more than one profile reconciles' \
   || fail "a duplicated (source, subtree) target was not reported"
 rm -f "$CFG/profiles.d/dup.conf"
+# A SOURCE NAMING A REMOTE WITH NO PROVIDER IS INCOHERENT, and it used to fail
+# while pointing at the wrong thing. PROVIDER defaults to `none` when the line
+# is absent, so the REMOTE is silently IGNORED: no mount is installed, nothing
+# brings the tree up, and the first pass faults with "source 'x' or its cache is
+# not ready". The cause is a missing line in a config file and the message was
+# about a mount.
+printf 'MOUNT=%s/nas\nCACHE_ROOT=%s/nascache\n' "$T" "$T" \
+  > "$CFG/sources.d/oops.conf"
+printf 'REMOTE=someremote\n' >> "$CFG/sources.d/oops.conf"
+out=$(_c check 2>&1)
+printf '%s\n' "$out" | grep -q "REMOTE='someremote' but no PROVIDER" \
+  || fail "a source declaring a REMOTE with no PROVIDER was accepted. Nothing
+will ever mount it, and the eventual fault names the mount rather than the
+config: $out"
+printf '%s\n' "$out" | grep -qE '\[FAULT\].*no PROVIDER' \
+  || fail "the incoherence was not a FAULT. No apply can add a missing line to
+someone's config file, so calling it drift loops the integrator: $out"
+printf '%s\n' "$out" | grep -q 'PROVIDER=rclone' \
+  || fail "the finding does not name the fix: $out"
+rm -f "$CFG/sources.d/oops.conf"
+# ...and a BYO source with NO remote named is perfectly coherent: that is the
+# whole point of PROVIDER=none, so this must not fire on the normal case.
+_c check 2>&1 | grep -q 'no PROVIDER' \
+  && fail "the check fired on a legitimate BYO source, which names no REMOTE" \
+  || :
 _c check 2>&1 | grep -qi 'config is coherent' \
   || fail "a clean config was not reported as coherent"
 
