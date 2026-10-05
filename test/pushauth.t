@@ -243,6 +243,16 @@ _c sync docs >/dev/null 2>&1 || fail "an authorised pass failed"
 _c check 2>&1 | grep -qi 'PULL-ONLY' \
   && fail "check still calls an authorised profile pull-only" || :
 
+# AND A PROFILE IN STEP MUST SAY SO, not report nothing. `-terse` stops unison
+# printing its own "Nothing to do", so the filtered body comes back EMPTY, and
+# an empty report cannot be told from a plan that failed to run. Reached here
+# because the pass above left the profile in step.
+out=$(_c plan docs 2>&1); rc=$?
+[ "$rc" = 0 ] || fail "plan exited $rc on a profile in step ($out)"
+printf '%s\n' "$out" | grep -q 'nothing pending' \
+  || fail "plan said NOTHING about a profile that is in step. An empty report
+    is indistinguishable from a plan that failed to run ($out)"
+
 #### -noupdate IS LOAD-BEARING, and only a CONFLICT=local profile shows it ####
 # With the default CONFLICT=remote the prf carries `prefer = <mount>`, so the
 # remote wins every conflict and a stale cache cannot overwrite it even with the
