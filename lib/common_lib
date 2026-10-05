@@ -120,7 +120,39 @@ source_get() {   # <source> <KEY>
 CRUMB_GLOB='.unison.*.unison.tmp'   # unison's transfer temps (a FILE glob)
 PROBE_DIR_NAME=.charon-probe        # the trait probe's scratch (a DIRECTORY)
 
-# The same two facts as rclone filter arguments, for a caller to pass through.
+# unison's CONFLICT COPIES, from copyonconflict. A third class, added
+# 2026-10-04, and the reason is that this file's own design notes asserted
+# twins were "already local-only, since prefer = mount makes the cache the
+# overwritten side". THAT WAS FALSE: a twin is local-only for exactly ONE
+# pass, after which it is ordinary new local content and propagates like
+# anything else. Measured on the live Drive before the fix: 566 twins,
+# 34055790 bytes, the largest entry in this project's own incidental-writes
+# list, asserted as closed.
+#
+# THERE ARE TWO FORMS AND THE SECOND IS EASY TO MISS. Measured on unison
+# 2.53.8 by conflicting one file three times in a day:
+#   <stem> (conflict_on_YYYY-MM-DD)<ext>       the first conflict of a day
+#   <stem> (conflict #N_on_YYYY-MM-DD)<ext>    every later one that day
+# A glob written only for the first silently misses every repeat, and the
+# 2026-10-04 Drive cleanup used exactly such a pattern. It was complete only
+# because no repeat happened to exist that day.
+#
+# THE DATE IS SPELT `????-??-??` ON PURPOSE. These patterns EXCLUDE paths from
+# a two-way sync, so a false positive is a real file that silently never
+# syncs. Anchoring on the date shape keeps plausible names safe; verified that
+# `(conflict resolution)`, `(conflict) 2026` and `(conflict_on_not-a-date)`
+# all still sync, while every twin form (including no extension, spaces and
+# brackets in the stem) is ignored.
+#
+# WHY NOT RENAME THE TWIN INSTEAD, so three nodes cannot collide: unison 2.53
+# gives no control over the name. MEASURED, both with and without `backup`
+# active: backupprefix and backupsuffix do not reach the conflict copy at all.
+# So keeping the twin off the remote is the only lever, which is also what
+# this project's design wanted all along.
+TWIN_GLOB='*(conflict_on_????-??-??)*'
+TWIN_GLOB_N='*(conflict #*_on_????-??-??)*'
+
+# The same facts as rclone filter arguments, for a caller to pass through.
 #
 # EACH CONSUMER RENDERS ITS OWN SYNTAX from the shared names; the names are the
 # single source of truth, not the spelling. rclone's rules are NOT unison's, and
@@ -131,8 +163,15 @@ PROBE_DIR_NAME=.charon-probe        # the trait probe's scratch (a DIRECTORY)
 #     is read as a FILE pattern and silently excludes NOTHING, the obvious
 #     spelling is the broken one, which is exactly the sort of exclude that
 #     looks right in a diff and does nothing in production.
+#   - the TWIN globs need no translation at all: measured 2026-10-04, the same
+#     two patterns exclude both forms at three depths under rclone while
+#     leaving `(conflict resolution)` alone. The seed must carry them for the
+#     same reason it carries the crumb glob: a twin left on a remote by an
+#     older charon, or by a node that has not taken this fix yet, must not be
+#     pulled DOWN into a cache that is now ignoring it.
 never_content_excludes() {
-  printf '%s\n' "--exclude" "$CRUMB_GLOB" "--exclude" "$PROBE_DIR_NAME/**"
+  printf '%s\n' "--exclude" "$CRUMB_GLOB" "--exclude" "$PROBE_DIR_NAME/**" \
+                "--exclude" "$TWIN_GLOB"  "--exclude" "$TWIN_GLOB_N"
 }
 
 # A CHECK VERDICT SAYS WHETHER AN APPLY WOULD HELP, which is a different

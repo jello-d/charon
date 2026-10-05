@@ -193,6 +193,66 @@ _sync
 [ -f "$T/cache/D/Google Earth/place.kml" ] \
   || fail "a path with a space was not reconciled"
 
+#### A TWIN MUST NOT REACH THE REMOTE ON ANY LATER PASS EITHER ####
+# THE GAP THIS CLOSES HID INSIDE THIS VERY FILE. The CONFLICT=remote case
+# above already asserts the twin is absent from the remote, and it was GREEN
+# throughout, while 566 twins totalling 34 MB accumulated on the live Drive.
+# The reason is the shape of the check, not the assertion: _conflict_setup
+# syncs ONCE, and a twin is local-only for exactly that one pass. From the
+# NEXT pass it is ordinary new local content and propagates like anything
+# else. So the assertion was evaluated at the only moment it was ever true.
+# Sync REPEATEDLY here, which is the only version of this question that means
+# anything.
+_reset
+printf 'SOURCE=s:D\n' > "$CFG/profiles.d/docs.conf"
+echo original > "$T/src/D/both.txt"
+echo filler   > "$T/src/D/other.txt"
+_c install >/dev/null 2>&1 || fail "install failed (twin containment)"
+_sync
+echo from-source > "$T/src/D/both.txt"
+echo from-cache  > "$T/cache/D/both.txt"
+sleep 1
+_sync                                     # the conflict: twin born in cache
+[ "$(_copies "$T/cache/D")" -ge 1 ] \
+  || fail "no twin was created at all, so this proves nothing"
+for _p in 1 2 3; do sleep 1; _sync; done  # the passes that used to leak it
+[ "$(_copies "$T/src/D")" = 0 ] \
+  || fail "a conflict twin reached the REMOTE after $_p further passes:
+    $(ls "$T/src/D")"
+[ "$(_copies "$T/cache/D")" -ge 1 ] \
+  || fail "the twin vanished from the cache; it is the only copy of what this
+    box was about to overwrite and must be KEPT locally"
+
+#### the SECOND conflict of a day is named differently, and must also stay ####
+# `(conflict #N_on_DATE)` is the form a glob written for the first one misses,
+# which is exactly what the 2026-10-04 Drive cleanup filter did.
+echo again-source > "$T/src/D/both.txt"
+echo again-cache  > "$T/cache/D/both.txt"
+sleep 1
+_sync
+sleep 1
+_sync
+_nhash=$(ls "$T/cache/D" | grep -c 'conflict #' || :)
+[ "$_nhash" -ge 1 ] \
+  || fail "no '(conflict #N_on_...)' twin appeared, so the second form is
+    untested here: $(ls "$T/cache/D")"
+ls "$T/src/D" | grep -q 'conflict #' \
+  && fail "a '(conflict #N_on_...)' twin reached the REMOTE:
+    $(ls "$T/src/D")" || :
+
+#### and a plausible real name that merely LOOKS like a twin still syncs ####
+# These ignores exclude paths from a two-way sync, so a false positive is a
+# real file that silently never reaches the other side.
+echo real > "$T/src/D/notes (conflict resolution).txt"
+echo real > "$T/src/D/minutes (conflict) 2026.txt"
+echo real > "$T/src/D/odd (conflict_on_not-a-date).txt"
+_sync
+for _n in 'notes (conflict resolution).txt' 'minutes (conflict) 2026.txt' \
+          'odd (conflict_on_not-a-date).txt'; do
+  [ -f "$T/cache/D/$_n" ] \
+    || fail "a legitimate file was WRONGLY ignored as a twin: $_n"
+done
+
 #### the charon-generated profile really does ignore unison's own temps ####
 # The bug that started all of this: a stranded .unison.*.tmp being treated as
 # ordinary content and REPLICATED. Assert it is not copied.

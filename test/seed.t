@@ -241,6 +241,15 @@ if [ -n "$_realrclone" ]; then
   printf 'x' > "$RB/src/deep/real deep.psp"
   printf 'x' > "$RB/src/unison-notes.txt"
   printf 'x' > "$RB/src/$PROBE_DIR_NAME-not-a-dir.txt"
+  # CONFLICT TWINS, both forms, at depth. A twin left on a remote by an older
+  # charon (or by a node that has not taken the ignore yet) must not be pulled
+  # DOWN into a cache that now ignores it: it would sit there forever,
+  # invisible to the reconciler that is supposed to manage the tree.
+  printf 'x' > "$RB/src/doc (conflict_on_2026-10-04).docx"
+  printf 'x' > "$RB/src/deep/doc (conflict #2_on_2026-10-04).docx"
+  # ...and names that merely LOOK like twins, which must survive
+  printf 'x' > "$RB/src/notes (conflict resolution).txt"
+  printf 'x' > "$RB/src/odd (conflict_on_not-a-date).txt"
 
   set --
   while IFS= read -r _x; do set -- "$@" "$_x"; done <<EOF
@@ -265,10 +274,21 @@ EOF
       despite the exclude. rclone reads a bare directory name as a FILE pattern
       and matches nothing, which is why the '/**' form is used: [$_got]" ;;
   esac
+  case $_got in
+    *'(conflict_on_2026-'*) fail "a conflict twin was seeded DOWN into the
+      cache despite the exclude: [$_got]" ;;
+  esac
+  case $_got in
+    *'(conflict #'*) fail "a '(conflict #N_on_...)' twin was seeded down. That
+      second form is the one a pattern written for the first silently misses:
+      [$_got]" ;;
+  esac
 
   # ...and everything that IS content did land. An exclude that also ate real
   # files would be far worse than the litter it removed.
   for _want in 'real file.psp' 'deep/real deep.psp' 'unison-notes.txt' \
+               'notes (conflict resolution).txt' \
+               'odd (conflict_on_not-a-date).txt' \
                "$PROBE_DIR_NAME-not-a-dir.txt"; do
     case " $_got " in
       *" $_want "*) : ;;

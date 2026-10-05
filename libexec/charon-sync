@@ -1078,6 +1078,8 @@ render_prf() {   # <profile>
           -e "s|@LABEL@|$_label|g" \
           -e "s|@CRUMB_GLOB@|$CRUMB_GLOB|g" \
           -e "s|@PROBE_DIR@|$PROBE_DIR_NAME|g" \
+          -e "s|@TWIN_GLOB@|$TWIN_GLOB|g" \
+          -e "s|@TWIN_GLOB_N@|$TWIN_GLOB_N|g" \
           -e "s|@PREFER_NOTE@|$_note|" \
           -e "s|@PREFER@|$_prefer|"
 
@@ -1656,20 +1658,45 @@ crumb_roots() {   # [profile]
 }
 
 # count and total bytes of the orphaned crumbs, as "<count> <bytes>".
+# Count paths arriving on stdin: "<count> <bytes>" on one line. Extracted so
+# the crumb tally and the twin tally cannot drift apart on what counting means.
+tally_paths() {
+  _tpn=0; _tpb=0
+  while IFS= read -r _tpf; do
+    [ -n "$_tpf" ] || continue
+    _tps=$(stat -c %s "$_tpf" 2>/dev/null) || _tps=0
+    _tpn=$((_tpn + 1)); _tpb=$((_tpb + _tps))
+  done
+  printf '%s %s' "$_tpn" "$_tpb"
+}
+
 crumb_tally() {   # [profile]
   _cta=$(crumb_age_min) || return 1
-  _ctl=$(mktemp) || return 1
   crumb_roots "${1:-}" | while IFS= read -r _ctr; do
     crumbs_in "$_ctr" "$_cta"
-  done >"$_ctl"
-  _ctn=0; _ctb=0
-  while IFS= read -r _ctf; do
-    [ -n "$_ctf" ] || continue
-    _cts=$(stat -c %s "$_ctf" 2>/dev/null) || _cts=0
-    _ctn=$((_ctn + 1)); _ctb=$((_ctb + _cts))
-  done <"$_ctl"
-  rm -f "$_ctl"
-  printf '%s %s' "$_ctn" "$_ctb"
+  done | tally_paths
+}
+
+# A conflict copy, on ONE side. No age gate: a twin is a completed file, never
+# a live resume point, so age says nothing about it (unlike a transfer temp).
+twins_in() {   # <root>
+  [ -d "$1" ] || return 0
+  find "$1" -type f \( -name "$TWIN_GLOB" -o -name "$TWIN_GLOB_N" \) \
+    2>/dev/null
+}
+
+# Twins per SIDE, because the two sides mean opposite things and one report
+# cannot serve both. <mount-count> <mount-bytes> <cache-count> <cache-bytes>.
+twin_tally() {   # [profile]
+  _ttm=$(for _ttp in ${1:-$(profile_names)}; do
+           _ttr=$(resolve_profile_roots "$_ttp" 2>/dev/null) || continue
+           twins_in "${_ttr%%|*}"
+         done | tally_paths)
+  _ttc=$(for _ttp in ${1:-$(profile_names)}; do
+           _ttr=$(resolve_profile_roots "$_ttp" 2>/dev/null) || continue
+           _ttt=${_ttr#*|}; twins_in "${_ttt%%|*}"
+         done | tally_paths)
+  printf '%s %s' "$_ttm" "$_ttc"
 }
 
 # Delete them. Under the sync LOCK, because a pass in flight owns its temps and
@@ -2257,6 +2284,36 @@ check_profile_health() {   # <profile>
 # It scans the MOUNT, which costs a few seconds through FUSE. That is the price
 # of an honest answer: the crumbs that matter are the ones on the remote, and a
 # cache-only scan would have reported zero all through the incident.
+# A TWIN IS A BACKUP, NOT LITTER, so this REPORTS and deliberately calls it
+# neither drift nor fault. Same reasoning the crumb scan already carries: an
+# integrator turns a non-zero check into drift and runs apply, apply has no
+# verb that deletes a user's backup, and the provision loop then spins forever
+# on something that is working as designed. charon will not delete these.
+#
+# THE TWO SIDES MEAN OPPOSITE THINGS:
+#   CACHE  expected. The twin is this box's copy of what it was about to lose,
+#          and keeping it local is the whole point of the ignore.
+#   MOUNT  the incidental remote write the ignore exists to prevent. Post-fix
+#          it means another node has not taken this version, or the ignore
+#          regressed. Worth saying loudly; still not something apply can fix.
+check_twins() {
+  # shellcheck disable=SC2046  # four integers, splitting is the intent
+  set -- $(twin_tally)
+  if [ "${1:-0}" -gt 0 ]; then
+    echo "  [WARN] $1 unison conflict copy/copies ON THE REMOTE"\
+         "(${2:-0} bytes). charon ignores these now, so they will not sync"\
+         "or be deleted: another node may predate that, or the ignore has"\
+         "regressed. Remove them from the remote once you have decided"\
+         "which copy you want."
+  fi
+  if [ "${3:-0}" -gt 0 ]; then
+    echo "  [WARN] $3 unison conflict copy/copies in the cache"\
+         "(${4:-0} bytes), kept LOCAL by design. Each one is a version this"\
+         "box was about to overwrite; charon will not remove them."
+  fi
+  return 0
+}
+
 check_crumbs() {
   # An age charon REFUSES to act on is drift a human must fix, not litter to
   # shrug at: with a bad CRUMB_AGE_MIN nothing is ever swept, silently.
@@ -2352,6 +2409,7 @@ do_check() {
   # Litter itself is NOT drift (see check_crumbs), but a CRUMB_AGE_MIN charon
   # refuses to act on is: nothing would ever be swept, and silently.
   check_crumbs || _rc=1
+  check_twins  || _rc=1
   check_notify_seam || _rc=1
   # The VERDICT, not just "did anything fail". _rc is passed only so a finding
   # that failed without classifying itself is caught loudly.
@@ -2419,6 +2477,17 @@ copyonconflict = true
 # its own litter; sweeping it is an out-of-band job.
 ignore = Name @CRUMB_GLOB@
 ignore = Name @PROBE_DIR@
+# A CONFLICT COPY IS NOT CONTENT EITHER, and this file's notes claimed it was
+# already local-only because `prefer` makes the cache the overwritten side.
+# False: a twin is local-only for ONE pass, then it is ordinary new local
+# content and propagates. 566 of them, 34 MB, measured on the live remote
+# 2026-10-04. Two forms, because every conflict after the first in a day is
+# named `(conflict #N_on_...)`; a glob for only the first misses all repeats.
+# Keeping them local is the point: the twin is a backup of what this box was
+# about to lose, which is worth having HERE and worth nothing on the remote,
+# where with three nodes the date-based name collides by construction.
+ignore = Name @TWIN_GLOB@
+ignore = Name @TWIN_GLOB_N@
 @PREFER_NOTE@
 prefer = @PREFER@
 confirmbigdel = true

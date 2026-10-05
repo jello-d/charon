@@ -228,4 +228,44 @@ mv "$T/st-away" "$T/st/gd"
 _c check >/dev/null 2>&1 || fail "check stayed red after restoring traits"
 _n=$((_n + 1))
 
+# A CONFLICT TWIN MUST BE REPORTED WITHOUT CHANGING THE VERDICT. This is the
+# one that would bite an integrator rather than a human: a twin is a BACKUP of
+# what this box was about to overwrite, charon deliberately will not delete it,
+# and `install` has no verb that could. So if check called it drift, tackup
+# would schedule an apply that cannot help and the provision loop would spin
+# forever, which is exactly the 2026-09-24 history-is-not-drift failure one
+# class over. Report loudly, verdict unchanged.
+#
+# Both sides, because they mean opposite things: in the CACHE it is working as
+# designed, on the MOUNT it is the incidental remote write the ignore exists to
+# prevent (so another node predates the fix, or the ignore regressed).
+mkdir -p "$T/cache/Docs" "$T/mnt/Docs"
+echo twin > "$T/cache/Docs/doc (conflict_on_2026-10-04).docx"
+out=$(_c check 2>&1); rc=$?
+[ "$rc" = 0 ] \
+  || fail "a twin in the CACHE changed check's verdict to $rc. It is a backup
+    charon refuses to delete and install cannot remove, so a non-zero verdict
+    makes an integrator loop on a working design:
+$out"
+printf '%s\n' "$out" | grep -qi 'conflict copy' \
+  || fail "a twin in the cache was not reported at all ($out)"
+printf '%s\n' "$out" | grep -qi 'cache' \
+  || fail "the cache-side twin report did not say which side it was on ($out)"
+_n=$((_n + 1))
+
+echo twin > "$T/mnt/Docs/doc (conflict_on_2026-10-04).docx"
+out=$(_c check 2>&1); rc=$?
+[ "$rc" = 0 ] \
+  || fail "a twin on the MOUNT changed check's verdict to $rc; still nothing
+    an apply can fix:
+$out"
+printf '%s\n' "$out" | grep -qi 'ON THE REMOTE' \
+  || fail "a twin on the MOUNT was not distinguished from a cache-side one,
+    though one is by design and the other is the write the fix prevents
+    ($out)"
+rm -f "$T/cache/Docs/doc (conflict_on_2026-10-04).docx" \
+      "$T/mnt/Docs/doc (conflict_on_2026-10-04).docx"
+_c check >/dev/null 2>&1 || fail "check stayed red after removing the twins"
+_n=$((_n + 1))
+
 pass "$_n breakages, each caught and each recovered, over a proven baseline"
