@@ -40,6 +40,13 @@ usage: charon <command> [args...]
                        (they are never content; see charon(1) for why they
                        cannot simply be kept off the remote). -n shows what it
                        would remove and deletes nothing.
+  audit  [source]      ask the REMOTE whether a path holds more than one object
+  plan   [profile]     what the next pass WOULD do; writes nothing
+  allow-push <profile> let this node create and update on the remote. Until it
+                       is allowed, a pass is PULL-ONLY: it fills the cache and
+                       refuses to write the remote, so a stale cache cannot
+                       resurrect files the fleet deleted. charon allows itself
+                       when it can tell the cache is safe.
   install              install the units, profiles, and timers
   uninstall            remove them
   source <list|show|probe|up|down> [name]
@@ -95,6 +102,8 @@ case "${1:-}" in
            esac ;;
   sweep)   shift; _sync sweep "$@" ;;
   audit)   shift; _sync audit "$@" ;;
+  plan)    shift; _sync plan "$@" ;;
+  allow-push) shift; _sync allow-push "$@" ;;
   install) shift
            # The MOUNT half only for sources charon actually mounts. It used to
            # run unconditionally, so a setup whose only source is PROVIDER=none

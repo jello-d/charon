@@ -220,6 +220,17 @@ modes:
                 mount non-deterministic and MANUFACTURES conflicts on every
                 node. Records what it finds; 'check' reports that for free
                 rather than paying for a listing itself.
+  plan [profile]
+                what the NEXT pass would do, writing NOTHING to either replica.
+                Takes the sync lock, so it cannot collide with a scheduled pass.
+  allow-push <profile>
+                authorise this node to CREATE and UPDATE on the remote for that
+                profile. Until then a pass is PULL-ONLY: it fills the cache and
+                refuses to write the remote. charon does this for itself when it
+                can tell the cache is safe (this node is already syncing, or the
+                cache is empty); what is left is a non-empty cache of unknown
+                provenance, where pushing could resurrect deleted files. Review
+                'plan' first.
   install       install Unison profiles, systemd units/timers, and seed
   uninstall     remove those units/timers/profiles (NOT the cache or config)
   status        what is true now: sources, profiles, last runs, next runs
@@ -496,6 +507,17 @@ record_failures() {   # <profile> <unison-rc> <captured-output>
     # exits 1. Measured 2026-09-26. So the record is LEFT ALONE and the gap is
     # said out loud, which is the only honest thing to do about output charon
     # does not understand, and silence here would have hidden the whole class.
+    # EXCEPT while PULL-ONLY, where exit 1 with nothing attributable is the
+    # EXPECTED shape: the guard makes unison skip the items it would have pushed
+    # and they are not failures. run_sync_profile already warned, this pass,
+    # that the profile is pull-only, and a second warning for the same expected
+    # condition is the warning-that-fires-every-time problem. Still said, at
+    # INFO, so a session debugging at LOG_LEVEL=3 sees the chain.
+    if [ -n "${CHARON_PULL_ONLY_ROOT:-}" ] && [ "$2" = 1 ]; then
+      log_info "profile '$1': exit 1 with no attributable path, which is what"\
+               "the pull-only guard skipping items looks like"
+      return 0
+    fi
     log_warn "profile '$1': unison exited $2 but charon could not attribute it"\
              "to any path (it reports propagation failures as 'Failed"\
              "[path]:'; a scan or digest error is worded otherwise). Keeping"\
@@ -724,6 +746,27 @@ check_names() {
 # Deliberately NOT the MOUNT: for PROVIDER=none that is someone else's tree, and
 # silently creating an empty directory where a missing mount belongs is how a
 # dead mount gets mistaken for a live one.
+# Authorise the profiles it is safe to authorise, and leave the rest PULL-ONLY
+# with a loud explanation. Runs at install, which is the provisioning moment and
+# the same place traits are measured.
+ensure_push_authorisation() {
+  for _epp in $(profile_names); do
+    push_authorised "$_epp" && continue
+    if push_safe_to_authorise "$_epp"; then
+      authorise_push "$_epp" "install: node already syncing, or cache empty"
+      log_trace "profile '$_epp' authorised to write the remote"
+      continue
+    fi
+    log_warn "profile '$_epp' is PULL-ONLY: this node has a NON-EMPTY"\
+             "cache and no unison archives, so charon cannot tell whether"\
+             "that content is current or a stale restore. Pushing it could"\
+             "return files the fleet has deleted."
+    log_warn "  review:  ${APP_NAME%% *} plan $_epp"
+    log_warn "  then:    ${APP_NAME%% *} allow-push $_epp"
+  done
+  return 0
+}
+
 ensure_cache_roots() {
   for _p in $(profile_names); do
     _ecs=$(profile_source_name "$_p"); [ -n "$_ecs" ] || continue
@@ -1850,6 +1893,59 @@ run_teed() {   # <file|""> <cmd...>
   esac
 }
 
+# --- PUSH AUTHORISATION: a node must EARN the right to write the remote -------
+#
+# THE HAZARD, measured 2026-10-05. Put a stale cache beside a current remote
+# with NO unison archive and unison treats every local-only file as NEW and
+# pushes it,
+# so a file the fleet DELETED months ago returns to the remote at rc=0 with no
+# warning. 500 of them is still rc=0: confirmbigdel guards mass DELETION, not
+# mass ADDITION. That is the provisioning case, and with three nodes on one
+# remote it is the realistic one.
+#
+# THE FIX IS SAFE-BY-CONSTRUCTION, NOT A GATE. Until a profile is authorised,
+# every pass runs with `-nocreation` and `-noupdate` on the MOUNT root, so:
+#   nothing is created on the remote   -> no resurrection
+#   nothing is updated on the remote   -> no stale content overwriting current
+#   remote -> cache still flows        -> the legitimate first seed works
+# Verified: the zombie stays local and unpushed, the remote's version wins in
+# the cache, and the stale local copy is twinned (locally, per the twin ignore).
+#
+# WHY NOT PROBE FOR THE ARCHIVE INSTEAD. `unison -showarchive` prints the
+# hashcodes and looks perfect for it, and it is a TRAP: it CREATES the archives
+# it reports. Measured, it turns a loud dangerous pass into a SILENT one, the
+# warning disappears and the resurrection still happens. Do not reach for it.
+push_ok_file() { printf '%s/push-ok/%s' "$CHARON_STATE" "$1"; }
+push_authorised() { [ -f "$(push_ok_file "$1")" ]; }
+
+# Authorise, recording WHY, because a decision that leaves no artifact is one
+# that silently did not happen.
+authorise_push() {   # <profile> <reason>
+  _apf=$(push_ok_file "$1")
+  mkdir -p "${_apf%/*}" || return 1
+  printf 'AUTHORISED=%s\nREASON=%s\n' "$(date +%s)" "$2" >"$_apf"
+}
+
+# Is it SAFE to authorise without a human looking? Only when there is nothing of
+# unknown provenance to push. Two ways that holds:
+#   - this UNISON_DIR already has archives, so this node has been syncing and is
+#     not a fresh join. THIS IS WHAT AVOIDS A MIGRATION CLIFF: every existing
+#     node authorises itself on the next install and notices nothing.
+#   - the cache subtree is EMPTY, so there is nothing local to resurrect, the
+#     legitimate first seed the dead-source guard already protects.
+# What is left is the dangerous case: a non-empty cache on a node with no
+# archives at all, which is content charon cannot vouch for.
+push_safe_to_authorise() {   # <profile>
+  for _psa in "$UNISON_DIR"/ar*; do
+    [ -e "$_psa" ] && return 0
+    break
+  done
+  _psr=$(resolve_profile_roots "$1" 2>/dev/null) || return 1
+  _pst=${_psr#*|}; _psc=${_pst%%|*}
+  dir_has_entries "$_psc" || return 0
+  return 1
+}
+
 run_unison_guarded() {   # <unison-profile> [capture-file]
   _up=$1
   _ucap=${2:-}
@@ -1862,6 +1958,14 @@ run_unison_guarded() {   # <unison-profile> [capture-file]
   _inh="systemd-inhibit --what=sleep --who=charon-sync --mode=block"
   set -- timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-3600}" \
     unison "$_up" -auto -batch -ui text -silent
+    # PULL-ONLY until authorised. Passed on the COMMAND LINE rather than written
+    # into the prf, because it is a property of this NODE's history, not of the
+    # profile, and baking it in would make the prf differ between nodes and so
+    # fail check's drift diff on every box but one.
+    if [ -n "${CHARON_PULL_ONLY_ROOT:-}" ]; then
+      set -- "$@" -nocreation "$CHARON_PULL_ONLY_ROOT" \
+                  -noupdate "$CHARON_PULL_ONLY_ROOT"
+    fi
   if $_inh --why="charon-sync probe" true 2>/dev/null; then
     run_teed "$_ucap" $_inh \
       --why="unison $_up syncing (unfreezable on FUSE)" "$@"
@@ -1881,12 +1985,27 @@ run_sync_profile() {
   gate_profile "$PROFILE" "$SERVICE_NAME"; _g=$?
   [ "$_g" -eq 0 ] || return "$_g"
 
+  # PULL-ONLY until this profile is authorised to write the remote. Announced at
+  # WARN, not INFO, because charon-sync pins LOG_LEVEL=2 and a pass that is
+  # deliberately refusing to push must not be able to do so silently.
+  CHARON_PULL_ONLY_ROOT=
+  if ! push_authorised "$PROFILE"; then
+    _rsp=$(resolve_profile_roots "$PROFILE" 2>/dev/null) && {
+      CHARON_PULL_ONLY_ROOT=${_rsp%%|*}
+      log_warn "profile '$PROFILE' is PULL-ONLY: this node has not been"\
+               "authorised to write the remote, so nothing will be created or"\
+               "updated there. Review '${APP_NAME%% *} plan $PROFILE', then"\
+               "'${APP_NAME%% *} allow-push $PROFILE'."
+    }
+  fi
+  export CHARON_PULL_ONLY_ROOT
   log_info "running Unison profile (non-interactive): $UNISON_PROFILE"
   # Capture unison's output so the failed PATHS can be recorded. A capture that
   # cannot be created is not a reason to skip the pass: syncing matters, knowing
   # which paths failed is a bonus, so this degrades to the old behaviour.
   CAPTURE=$(mktemp "${TMPDIR:-/tmp}/charon-uni-$PROFILE.XXXXXX" 2>/dev/null) \
     || CAPTURE=
+  PASS_NAMED_A_PATH=
   run_unison_guarded "$UNISON_PROFILE" "$CAPTURE"; RET=$?
   if [ -n "$CAPTURE" ]; then
     # SETTLED FIRST, because it is a diff against the record that
@@ -1896,6 +2015,11 @@ run_sync_profile() {
     if unison_rc_reported "$RET"; then
       NEWSET=$CAPTURE.set
       parse_unison_failures "$CAPTURE" >"$NEWSET" 2>/dev/null || : >"$NEWSET"
+      # THIS pass's answer, kept for the pull-only decision below. It cannot be
+      # re-read from the record afterwards: record_failures deliberately LEAVES
+      # a previous record alone when a failing pass parses nothing, so reading
+      # it back would answer about an older pass.
+      [ -s "$NEWSET" ] && PASS_NAMED_A_PATH=y
       sweep_settled "$PROFILE" "$(settled_paths "$PROFILE" "$NEWSET")"
       rm -f "$NEWSET"
     fi
@@ -1909,6 +2033,30 @@ run_sync_profile() {
   fi
 
   if [ $RET -eq 0 ]; then
+    notify clear "$SERVICE_NAME"; return 0
+  fi
+  # A PULL-ONLY PASS REPORTS 1 WHEN IT REFUSED A PUSH, and that is the guard
+  # working, not a failure. Measured 2026-10-05: nocreation/noupdate on the
+  # mount root makes unison SKIP those items, printing a `<=?=>` row per item,
+  # and exit 1.
+  #
+  # THREE CONDITIONS, and every one of them is load-bearing. A profile can stay
+  # unauthorised indefinitely, because only a human can clear it, so anything
+  # forgiven here is forgiven for as long as that lasts:
+  #   - pull-only, or this is an ordinary fault;
+  #   - rc exactly 1, since 2 and above are propagation failures the guard
+  #     cannot explain;
+  #   - and charon NAMED NO FAILING PATH. This is the sharp one. A genuine SCAN
+  #     failure ALSO exits 1 (measured: an unreadable directory), so rc alone
+  #     cannot tell the two apart, and a blanket rc-1 forgiveness would swallow
+  #     it. It can be told apart by the output: a scan failure emits the `error`
+  #     column row parse_unison_failures anchors on, and the guard's skipped
+  #     items emit `<=?=>` rows, which it ignores by design.
+  if [ -n "$CHARON_PULL_ONLY_ROOT" ] && [ "$RET" -eq 1 ] \
+     && [ -z "$PASS_NAMED_A_PATH" ]; then
+    log_warn "profile '$PROFILE': pull-only pass complete; unison reported"\
+             "skipped items (exit 1), which is what refusing to write the"\
+             "remote looks like. The cache is up to date with the remote."
     notify clear "$SERVICE_NAME"; return 0
   fi
   MSG="Unison $UNISON_PROFILE failed (exit $RET)."
@@ -2045,6 +2193,7 @@ do_install() {
   fi
   ensure_source_traits
   ensure_cache_roots
+  ensure_push_authorisation
   setup_unison_profiles
   # A unit that could not be RENDERED is not something to report success over:
   # the existing one was deliberately kept, so the box is running the previous
@@ -2356,6 +2505,21 @@ do_audit() {   # [source]
 # which object survives, and on a file this account does not own the API
 # refuses outright). Never audited is a WARN, because an absent measurement is
 # not evidence of a problem and an install cannot create one either.
+# PULL-ONLY is a WARN, never drift or fault. It is charon working as designed on
+# a node whose cache provenance is unknown, and the only thing that can clear it
+# is a HUMAN deciding, so a verdict would make an integrator schedule an apply
+# that cannot help. Same reasoning as the crumb and twin reports.
+check_push_authorisation() {
+  for _cpp in $(profile_names); do
+    push_authorised "$_cpp" && continue
+    echo "  [WARN] profile '$_cpp' is PULL-ONLY: charon will not create or"\
+         "update anything on the remote for it. Review"\
+         "'${APP_NAME%% *} plan $_cpp', then '${APP_NAME%% *} allow-push"\
+         "$_cpp'."
+  done
+  return 0
+}
+
 check_audit() {
   _carc=0; _caany=
   for _cas in $(source_names); do
@@ -2388,6 +2552,102 @@ check_audit() {
   done
   [ -n "$_caany" ] || return 0
   return "$_carc"
+}
+
+# THE PLAN, with NO writes: what the next pass WOULD do.
+#
+# unison 2.53 has no -dryrun, so the mechanism is REFUSING EVERY WRITE rather
+# than declining to confirm one: -nocreation, -noupdate and -nodeletion on BOTH
+# roots. unison then reconciles, reports each pending item with its direction,
+# and skips it, naming the flag that stopped it. Nothing can be written whatever
+# it is told, which is a property of the command line rather than of the
+# interaction.
+#
+# THE OBVIOUS MECHANISM IS THE BROKEN ONE, and it was built first: defeat
+# `batch` so unison asks instead of acting, and answer with EOF from /dev/null.
+# It works only when an archive exists. With NO archive unison emits its "no
+# archive files were found" warning, ends it with `Press return to continue.`,
+# consumes the EOF there and exits BEFORE reconciling, so the plan is empty.
+# That is the one state where plan matters most: a node with no archive is
+# precisely the one held pull-only and told to review this.
+#
+# AND IT CREATES THE ARCHIVES IT REPORTS ON, which is the `-showarchive` trap in
+# a new place, and here it would be self-defeating: an archive left behind by
+# plan makes push_safe_to_authorise read this node as "already syncing", so
+# merely LOOKING would silently authorise it. So the whole thing runs against a
+# THROWAWAY COPY of UNISON_DIR, and the real one is never opened for writing.
+#
+# IT TAKES THE SYNC LOCK, which is the reason this is a verb rather than a note
+# telling you to run unison by hand: the note had to warn you to stop the timer
+# first, because a hand-run unison bypasses the lock and can collide with a
+# scheduled pass. A verb cannot forget.
+do_plan() {   # [profile]
+  _plp=${1:-}
+  if [ -n "$_plp" ] && [ ! -f "$PROFILES_DIR/$_plp.conf" ]; then
+    log_error "unknown profile '$_plp'"; return 2
+  fi
+  # The lock is held against a concurrent PASS, which is what would make the
+  # plan untrue by the time it is read, and is also why running unison by hand
+  # was a footgun worth replacing with a verb.
+  mkdir -p "$LOCKDIR"
+  exec 9>"$LOCKFILE"
+  if ! flock -n 9 2>/dev/null; then
+    log_warn "plan: a charon sync holds the lock; its result would be stale"\
+             "before you read it. Try again when the pass finishes."
+    return "$EX_SKIP"
+  fi
+  # The scratch UNISON dir. ONE for the whole run, so the archives unison writes
+  # for the first profile are available to the second, exactly as they would be
+  # in the real dir.
+  _plt=$(mktemp -d "${TMPDIR:-/tmp}/charon-plan.XXXXXX") || {
+    log_error "plan: could not make a scratch directory"; return 1; }
+  cp -a "$UNISON_DIR"/ar* "$_plt/" 2>/dev/null || :
+  UNISON=$_plt; export UNISON
+  _plrc=0
+  for _pl in ${_plp:-$(profile_names)}; do
+    echo "== plan for '$_pl' (NOTHING is written) =="
+    if push_authorised "$_pl"; then
+      echo "   authorised: a pass MAY create and update on the remote"
+    else
+      echo "   PULL-ONLY: a pass will refuse to create or update on the remote"
+    fi
+    if ! cp -a "$UNISON_DIR/charon-$_pl.prf" "$_plt/" 2>/dev/null; then
+      echo "   no generated profile; run '${APP_NAME%% *} install'"
+      _plrc=1
+      continue
+    fi
+    cp -a "$UNISON_DIR/charon-$_pl.prf.local" "$_plt/" 2>/dev/null || :
+    # Resolve the roots so the refusals can name them. A plan for a profile
+    # whose roots will not resolve is not a plan, and saying so beats a unison
+    # usage message that names nothing.
+    if ! _plr=$(resolve_profile_roots "$_pl" 2>&1); then
+      echo "   cannot resolve this profile's roots: $_plr"
+      _plrc=1
+      continue
+    fi
+    _plm=${_plr%%|*}; _plrest=${_plr#*|}; _plc=${_plrest%%|*}
+    # EVERY write refused on BOTH roots, so this cannot propagate anything
+    # whatever unison decides. The boilerplate of the no-archive warning is
+    # dropped and its first line kept: that line is the heart of why a node is
+    # held pull-only; the paragraph under it is 18 lines of advice about DHCP.
+    unison "charon-$_pl" -ui text -batch -auto -silent=false -dumbtty \
+      -nocreation "$_plm" -noupdate "$_plm" -nodeletion "$_plm" \
+      -nocreation "$_plc" -noupdate "$_plc" -nodeletion "$_plc" \
+      </dev/null 2>&1 \
+      | sed -n '/^This can happen either/,/^environment variable/d; p' \
+      | grep -vE '^$|^Contacting|^Looking for changes$|^Reconciling changes$' \
+      | sed 's/^/   /'
+  done
+  flock -u 9 2>/dev/null; exec 9>&-
+  # The literal, not the variable: a delete whose target is expanded at run time
+  # is the shape that removed a working tree in this fleet once. mktemp -d
+  # answering empty would make this `rm -rf /ar*`.
+  case $_plt in
+    "${TMPDIR:-/tmp}"/charon-plan.??????) rm -rf "$_plt" ;;
+    *) log_warn "plan: refusing to remove an unexpected scratch dir '$_plt'" ;;
+  esac
+  [ "$_plrc" = 0 ] || return "$_plrc"
+  return 0
 }
 
 check_crumbs() {
@@ -2487,6 +2747,7 @@ do_check() {
   check_crumbs || _rc=1
   check_twins  || _rc=1
   check_audit  || _rc=$(worse_of "$_rc" "$?")
+  check_push_authorisation || _rc=$(worse_of "$_rc" "$?")
   check_notify_seam || _rc=1
   # The VERDICT, not just "did anything fail". _rc is passed only so a finding
   # that failed without classifying itself is caught loudly.
@@ -2528,6 +2789,16 @@ case "$MODE" in
   seed-full) seed_full ;;
   sweep)     shift; do_sweep "$@" ;;
   audit)     shift; do_audit "$@" ;;
+  plan)      shift; do_plan "$@" ;;
+  allow-push)
+    shift
+    [ -n "${1:-}" ] || { log_error "allow-push needs a profile name"; exit 2; }
+    [ -f "$PROFILES_DIR/$1.conf" ] \
+      || { log_error "unknown profile '$1'"; exit 2; }
+    authorise_push "$1" "allow-push, by hand" \
+      || { log_error "could not record it"; exit 1; }
+    log_warn "profile '$1' may now CREATE AND UPDATE on the remote."
+    log_warn "If that cache held a stale restore, the next pass pushes it." ;;
   install)   do_install ;;
   uninstall) do_uninstall ;;
   config|status) do_status ;;

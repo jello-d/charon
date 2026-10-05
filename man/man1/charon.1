@@ -59,6 +59,36 @@ a tree you have not looked at before. See
 .B ORPHANED TRANSFER TEMPS
 for why they cannot simply be kept off the remote.
 .TP
+.B charon audit " " [source]
+Ask the REMOTE itself whether any path holds more than one object, or any object
+has no content stream. Providers that permit duplicate names (Google Drive does)
+can hold two objects at one path, and a FUSE mount must present exactly one, so
+the file's apparent content FLIPS between passes and a reconciler correctly
+reads both replicas as diverged. That manufactures conflicts on every node at
+once and no amount of local checking can see it. The result is RECORDED, so
+.B charon check
+reports it without paying for a listing. charon will not collapse a duplicate
+for you: that means choosing which object survives, which is a decision, so it
+names the remedy
+.RB ( "rclone dedupe" )
+and stops.
+.TP
+.B charon plan " " [profile]
+What the next pass WOULD do, writing NOTHING to either replica. Every pending
+item is listed with its direction and the reason it was skipped. Useful before
+authorising a push, and after a node has been away long enough that you would
+rather look first. It takes the sync lock, so unlike running the reconciler by
+hand it cannot collide with a scheduled pass, and it runs against a throwaway
+copy of the reconciler's state so that looking changes nothing.
+.TP
+.B charon allow-push " " <profile>
+Authorise THIS NODE to create and update on the remote for that profile. Until
+then the profile is PULL-ONLY; see
+.B PULL-ONLY NODES
+below for why, and read
+.B charon plan
+first. The decision is recorded with a reason and survives reinstalls.
+.TP
 .B charon install " " | " " uninstall
 Provision the units, profiles and timers, or remove them. This is also what
 arms the
@@ -313,6 +343,45 @@ in
 reports whatever is left but does
 .I not
 treat it as drift, since no amount of re-provisioning clears litter.
+.SH PULL-ONLY NODES
+A bidirectional sync with no record of a previous run treats every file that
+exists on only one side as NEW, and propagates it. That is correct, and on a
+first seed it is what you want. On a node whose cache was restored from a
+backup, or copied from another machine, or simply left behind for months, it
+means the remote GAINS every file that cache still holds, including files the
+rest of the fleet deleted deliberately. The reconciler reports success while
+doing it: a mass DELETION is guarded
+.RB ( confirmbigdel ),
+a mass ADDITION is not, and resurrecting five hundred files exits zero.
+.PP
+So a profile does not start out allowed to write the remote. Until it is, every
+pass refuses to create or update anything there, while still bringing the cache
+up to date, and says so at each pass. Nothing is lost: whatever the cache held
+stays exactly where it is, locally, for you to look at.
+.PP
+charon allows itself in the two cases it can tell are safe, so an existing
+installation notices none of this:
+.TP
+.B this node is already syncing
+the reconciler's archives exist, so there is a record of previous runs and
+nothing of unknown provenance to push.
+.TP
+.B the cache subtree is empty
+there is nothing local to resurrect, which is the ordinary first seed.
+.PP
+What is left is a NON-EMPTY cache on a node with no history, and that charon
+will not vouch for. Run
+.B charon plan
+to see exactly what a pass would push, then
+.B "charon allow-push <profile>"
+when you are satisfied. The decision is recorded and permanent.
+.PP
+.B charon check
+reports a pull-only profile as a WARNING and
+.I not
+as drift or a fault, deliberately: nothing a re-provision does can make this
+decision, so a verdict would make an integrator schedule a repair that cannot
+work and loop on it forever.
 .SH EXIT STATUS
 .B charon sync
 distinguishes a pass that did WORK from one that did NOTHING, because the two
