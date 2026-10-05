@@ -512,6 +512,40 @@ _need() {
   log_error "a source name is required"; usage >&2; exit 2
 }
 
+# A NAME charon DOES NOT KNOW MUST BE REFUSED, ONCE AND BY NAME. Without this
+# every query verb answered confidently about a source that does not exist,
+# because source_get returns empty for an unknown name and the code carried on
+# with the blanks. Measured 2026-10-05:
+#   `source show nosuch`   exit 0, and it printed
+#                          "declared: (implicit, derived from CHARON_REMOTE)",
+#                          which is FALSE: the implicit source is named
+#                          `default`. So a typo in a profile's SOURCE= was
+#                          reported as an existing implicit source, and the
+#                          reader went looking somewhere else.
+#   `source health nosuch` exit 0, "online". A false POSITIVE on a health check,
+#                          for a tree that does not exist.
+#   `source status/probe`  exit 1 but blaming "has no MOUNT", which sends you to
+#                          a config file that is not there. A missing MOUNT and
+#                          a missing SOURCE are different diagnoses.
+# Same family as the 2026-09-16 finding that names were never validated, which
+# armed timers for two phantom profiles.
+#
+# DELIBERATELY NOT APPLIED TO up/down. `charon source down <src>` is the mount
+# unit's ExecStop, so refusing there would make a teardown FAIL for a source
+# whose declaration has been removed while its instance is still enabled, which
+# is precisely when a clean teardown matters most.
+_known() {   # <name>
+  # `default` is always legitimate: it derives from CHARON_REMOTE and needs no
+  # file, which is why a single-remote install ships no sources.d at all.
+  [ "$1" = default ] && return 0
+  source_names | grep -qxF "$1" && return 0
+  log_error "no such source '$1'."\
+            "Known: $(source_names | tr '\n' ' ')default"
+  log_error "A source is a file in $CHARON_SOURCES_DIR, or the implicit"\
+            "'default' derived from CHARON_REMOTE."
+  exit 2
+}
+
 # SOURCEABLE FOR TESTING. Every test until now drove the whole command against
 # stubs, which is slow and cannot reach an edge case cheaply. With this, a unit
 # test sources the file and calls a function directly with controlled input.
@@ -531,13 +565,14 @@ fi
 
 case "${1:-}" in
   list)     source_names ;;
-  provider) _need "${2:-}"; source_provider "$2"; echo ;;
-  status) _need "${2:-}"; do_status "$2" ;;
-  health) _need "${2:-}"; do_health "$2" ;;
-  seed)   _need "${2:-}"; do_seed "$2" "${3:-}" "${4:-}" ;;
-  show)  _need "${2:-}"; do_show "$2" ;;
-  probe) _need "${2:-}"; do_probe "$2" ;;
-  audit) _need "${2:-}"; do_audit "$2" ;;
+  provider) _need "${2:-}"; _known "$2"; source_provider "$2"; echo ;;
+  status) _need "${2:-}"; _known "$2"; do_status "$2" ;;
+  health) _need "${2:-}"; _known "$2"; do_health "$2" ;;
+  seed)   _need "${2:-}"; _known "$2"; do_seed "$2" "${3:-}" "${4:-}" ;;
+  show)  _need "${2:-}"; _known "$2"; do_show "$2" ;;
+  probe) _need "${2:-}"; _known "$2"; do_probe "$2" ;;
+  audit) _need "${2:-}"; _known "$2"; do_audit "$2" ;;
+  # up/down take NO _known gate, on purpose: see the comment on _known.
   up)    _need "${2:-}"; do_updown up "$2" ;;
   down)  _need "${2:-}"; do_updown down "$2" ;;
   ""|-h|--help|help) usage ;;

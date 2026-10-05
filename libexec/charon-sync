@@ -2566,7 +2566,14 @@ source_subtrees() {   # <source>
 do_audit() {   # [source]
   _aurc=0; _auany=
   for _aus in ${1:-$(source_names)}; do
-    _aup=$("$CHARON_LIBEXEC/charon-source" provider "$_aus")
+    # AN UNKNOWN NAME MUST BE REFUSED NON-ZERO. charon-source's own gate prints
+    # the refusal, but its exit was being swallowed here: the substitution below
+    # failed, the loop carried on, and the function returned 0, so `charon audit
+    # nosuch` printed an ERROR and reported success. A refusal that exits 0 is
+    # the shape an integrator reads as "all clear".
+    if ! _aup=$("$CHARON_LIBEXEC/charon-source" provider "$_aus"); then
+      return 2
+    fi
     [ "$_aup" = rclone ] || continue
     _auany=y
     CHARON_AUDIT_SUBTREES="$(source_subtrees "$_aus")" \

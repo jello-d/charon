@@ -189,6 +189,17 @@ AUDIT_FAIL=1 AUDIT_JSON=$T/clean.json _c audit >/dev/null 2>&1 \
     would read as 'all clear':
 $(cat "$REC")"
 
+# --- AN UNKNOWN SOURCE NAME MUST REFUSE NON-ZERO, not print an error and
+# --- report success. charon-source's gate prints the refusal, and its exit was
+# --- being SWALLOWED here: the provider lookup failed, the loop carried on, and
+# --- do_audit returned 0. A refusal that exits 0 is what an integrator reads as
+# --- all clear.
+out=$(_c audit nosuchsource 2>&1); rc=$?
+[ "$rc" = 0 ] \
+  && fail "audit of an unknown source reported SUCCESS: $out" || :
+printf '%s\n' "$out" | grep -q "no such source 'nosuchsource'" \
+  || fail "audit of an unknown source did not refuse by name: $out"
+
 # --- PROVIDER=none has no remote API, and that is not a failure ---
 printf 'SOURCE=byo:Docs\n' > "$CFG/profiles.d/byo.conf"
 AUDIT_JSON=$T/clean.json _c audit >/dev/null 2>&1 || :

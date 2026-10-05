@@ -96,15 +96,10 @@ env PATH="$T/bin:/usr/bin:/bin" HOME="$T" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
   CHARON_REMOTE=testremote sh "$HERE/bin/charon" mount install >/dev/null 2>&1 \
   || fail "mount install needed privilege it should not have needed"
 
-#### THE SOURCE LIFECYCLE: `charon source up|down`, which NOTHING ran ####
-# `charon source down <src>` is the mount unit's own ExecStop, so EVERY teardown
-# goes through it, and no test had ever executed it: three tests asserted the
-# unit TEXT says `charon source up %i` and stopped there. The 2026-09-18
-# incident was a teardown unmounting a live tree, which is this code path.
-#
-# The dispatch is observed through CHARON_LIBEXEC, pointed at a stub
-# charon-mount that records its argv. That tests do_updown's ROUTING, which is
-# the part with branches, rather than re-testing charon-mount's unmount.
+# The source impl is driven directly from here on. CHARON_LIBEXEC points at a
+# stub directory so the lifecycle section below can observe what charon-mount
+# was asked to do, and CHARON_LIB must be set alongside it: charon-source
+# derives it as $CHARON_LIBEXEC/../lib, and the stub dir has no sibling lib/.
 mkdir -p "$T/stub"
 ln -sf "$HERE/libexec/charon-source" "$T/stub/charon-source"
 cat > "$T/stub/charon-mount" <<EOF
@@ -118,6 +113,60 @@ _src() {
     CHARON_REMOTE=testremote CHARON_LIBEXEC="$T/stub" CHARON_LIB="$HERE/lib" \
     sh "$T/stub/charon-source" "$@" 2>&1
 }
+
+#### A NAME charon DOES NOT KNOW MUST BE REFUSED, BY NAME ####
+# Every query verb used to answer confidently about a source that does not
+# exist, because source_get returns empty for an unknown name and the code
+# carried on with the blanks. Two were actively misleading:
+#   `show nosuch`   exit 0, printing "declared: (implicit, derived from
+#                   CHARON_REMOTE)", which is FALSE (the implicit source is
+#                   named `default`), so a typo'd SOURCE= read as an existing
+#                   source and sent the reader elsewhere.
+#   `health nosuch` exit 0, "online". A false POSITIVE on a health check.
+# status and probe did exit 1, but blaming "has no MOUNT", which points at a
+# config file that is not there.
+for _v in show provider status health probe audit; do
+  out=$(_src "$_v" nosuchsource 2>&1); rc=$?
+  [ "$rc" = 2 ] \
+    || fail "source $_v on an unknown name exited $rc, not 2. charon must not
+answer about a source that does not exist ($out)"
+  printf '%s\n' "$out" | grep -q "no such source 'nosuchsource'" \
+    || fail "source $_v did not refuse BY NAME; a missing SOURCE and a missing
+MOUNT are different diagnoses ($out)"
+  printf '%s\n' "$out" | grep -q 'Known:' \
+    || fail "source $_v refused without naming what IS known, which is what
+makes a typo obvious ($out)"
+done
+# ...and the IMPLICIT default must never be refused. THE FIXTURE MATTERS HERE:
+# this test declared sources.d/default.conf earlier, so `default` was in
+# source_names and the assertion passed through the ordinary path, proving
+# nothing about the implicit case. Found by mutation. Move the file aside so
+# `default` is genuinely implicit, with no file anywhere.
+# BOTH files move: the legacy `SUBTREE=` profile here makes source_names emit
+# `default` too, so moving only the sources.d file left the name known by the
+# other route and the short-circuit stayed unreachable. Mutation found that.
+mv "$CFG/sources.d/default.conf" "$T/default.conf.aside"
+mv "$CFG/profiles.d/docs.conf" "$T/docs.conf.aside"
+out=$(_src provider default 2>&1); rc=$?
+mv "$T/default.conf.aside" "$CFG/sources.d/default.conf"
+mv "$T/docs.conf.aside" "$CFG/profiles.d/docs.conf"
+[ "$rc" = 0 ] \
+  || fail "the IMPLICIT 'default' was refused (exit $rc). It derives from
+CHARON_REMOTE and needs no sources.d file, which is why a single-remote install
+ships none at all ($out)"
+# a declared source answers too
+_src provider testdecl >/dev/null 2>&1 \
+  && fail "an undeclared name was accepted" || :
+
+#### THE SOURCE LIFECYCLE: `charon source up|down`, which NOTHING ran ####
+# `charon source down <src>` is the mount unit's own ExecStop, so EVERY teardown
+# goes through it, and no test had ever executed it: three tests asserted the
+# unit TEXT says `charon source up %i` and stopped there. The 2026-09-18
+# incident was a teardown unmounting a live tree, which is this code path.
+#
+# The dispatch is observed through CHARON_LIBEXEC, pointed at a stub
+# charon-mount that records its argv. That tests do_updown's ROUTING, which is
+# the part with branches, rather than re-testing charon-mount's unmount.
 cat > "$CFG/sources.d/rc.conf" <<EOF
 PROVIDER=rclone
 REMOTE=testremote
