@@ -75,7 +75,7 @@ EOF
 # The [BGN]/[END] lines above are REAL unison output and are BRACKETED, which
 # is what forces the parse to be anchored on "Failed [" rather than on "some
 # text in brackets". Without them a parse loosened to any bracketed text passes
-# this test unchanged -- measured, by mutation, and it did.
+# this test unchanged, measured by mutation, and it did.
 got=$(parse_unison_failures "$T/out")
 want='plain.txt
 sub/Fenix Watchface - tuned.psp

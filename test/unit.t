@@ -1,7 +1,7 @@
 #!/bin/sh
 # unit.t - UNIT tests: functions called directly with controlled input.
 #
-# Every other test here is an integration test -- drive the whole command
+# Every other test here is an integration test: drive the whole command
 # against stubs and inspect what it wrote. Those prove the pieces fit, but they
 # are slow, and they cannot cheaply reach an edge case (an empty value, a
 # hidden file, a tilde, a pattern with a slash). Several real bugs in this

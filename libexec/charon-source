@@ -107,7 +107,7 @@ do_status() {   # <source>
       fi
       mount | grep -q "on $_m "; return $? ;;
     *)
-      # Something else owns the tree, so charon cannot assume it is a mount --
+      # Something else owns the tree, so charon cannot assume it is a mount:
       # a plain directory is a legitimate BYO source. But if it WAS a
       # mountpoint when we measured it, it must still be one: an unmounted
       # mountpoint is an existing, EMPTY directory, and an existence test would

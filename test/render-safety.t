@@ -10,7 +10,7 @@
 #   "[INFO ] ... resolved to /home/jello/bin/x" + newline + the real path,
 #   MULTI-LINE. render_sync_unit feeds that to sed as a replacement, a
 #   multi-line sed replacement is an ERROR ("unterminated `s' command"), sed
-#   produced nothing, and install -- which redirected the renderer straight at
+#   produced nothing, and install, which redirected the renderer straight at
 #   the unit file, left charon-sync@.service ZERO BYTES.
 #
 # Latent until then only because charon-sync pins LOG_LEVEL=2, so log_info was

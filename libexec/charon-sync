@@ -1024,7 +1024,7 @@ render_prf_traits() {   # <source>
 # CONFLICT, mapped onto unison HERE and nowhere else, so profiles never speak
 # the engine's vocabulary. Prints TWO lines: the explanatory note, then the
 # value for `prefer`. Split out of render_prf so it can be unit-tested without
-# a full install -- this mapping decides which side wins a conflict and where
+# a full install. This mapping decides which side wins a conflict and where
 # the overwritten copy lands, which is too important to reach only through an
 # integration test.
 prf_conflict_policy() {   # <profile> <mount-root> <cache-root>

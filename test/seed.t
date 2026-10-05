@@ -3,7 +3,7 @@
 #
 # THE GAP THIS CLOSES. Seeding was the largest wholly untested surface left in
 # charon. It WRITES (it populates the cache), it shells out to `rclone copy`,
-# and `charon install` kicks it in the background on every fresh install -- so
+# and `charon install` kicks it in the background on every fresh install, so
 # it runs unattended, on a real remote, with nobody watching.
 #
 # The property that matters most is the DIRECTION. The whole justification for
@@ -87,7 +87,7 @@ printf '%s\n' "$_c" | awk '{print $3}' | grep -q '^gd:' \
 # --- THE SEED MUST NOT PULL charon's OWN LITTER DOWN -------------------------
 # rclone knows nothing about the prf's Tier 0 ignores, so a bare `rclone copy`
 # pulled the remote's unison temps and probe scratch into the cache on every
-# sweep and every fresh install -- straight past the patterns charon itself
+# sweep and every fresh install, straight past the patterns charon itself
 # declares as never-content. Harmless while both ends ignore them, but it is
 # asserted-vs-actual drift, and the moment an ignore is removed the litter is
 # live data.
