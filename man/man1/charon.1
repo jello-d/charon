@@ -81,13 +81,17 @@ rather look first. It takes the sync lock, so unlike running the reconciler by
 hand it cannot collide with a scheduled pass, and it runs against a throwaway
 copy of the reconciler's state so that looking changes nothing.
 .TP
-.B charon allow-push " " <profile>
+.B charon allow-push " " [--revoke] " " <profile>
 Authorise THIS NODE to create and update on the remote for that profile. Until
 then the profile is PULL-ONLY; see
 .B PULL-ONLY NODES
 below for why, and read
 .B charon plan
-first. The decision is recorded with a reason and survives reinstalls.
+first. The decision is recorded with a reason and survives reinstalls, so it is
+also the one thing here you may want to take back:
+.B --revoke
+returns the profile to pull-only. Revoking only ever RESTRICTS what a pass may
+do, so unlike the grant it carries no warning.
 .TP
 .B charon install " " | " " uninstall
 Provision the units, profiles and timers, or remove them. This is also what
@@ -462,6 +466,12 @@ the sources: what to cache, and how it comes to exist.
 .TP
 .I ~/.config/charon/profiles.d/*.conf
 the profiles: what to reconcile, and with what policy.
+.TP
+.I ~/.local/state/charon/push-ok/<profile>
+whether this node has been authorised to write the remote for that profile, and
+the reason it was. Its ABSENCE is what makes a profile pull-only, so deleting
+this file by hand is the same thing as
+.BR "charon allow-push --revoke" .
 .TP
 .I ~/.local/state/charon/traits/*
 the MEASURED backend traits each profile is derived from.

@@ -42,11 +42,12 @@ usage: charon <command> [args...]
                        would remove and deletes nothing.
   audit  [source]      ask the REMOTE whether a path holds more than one object
   plan   [profile]     what the next pass WOULD do; writes nothing
-  allow-push <profile> let this node create and update on the remote. Until it
+  allow-push [--revoke] <profile>
+                       let this node create and update on the remote. Until it
                        is allowed, a pass is PULL-ONLY: it fills the cache and
                        refuses to write the remote, so a stale cache cannot
                        resurrect files the fleet deleted. charon allows itself
-                       when it can tell the cache is safe.
+                       when it can tell the cache is safe. --revoke undoes it.
   install              install the units, profiles, and timers
   uninstall            remove them
   source <list|show|probe|up|down> [name]

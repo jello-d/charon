@@ -223,9 +223,10 @@ modes:
   plan [profile]
                 what the NEXT pass would do, writing NOTHING to either replica.
                 Takes the sync lock, so it cannot collide with a scheduled pass.
-  allow-push <profile>
+  allow-push [--revoke] <profile>
                 authorise this node to CREATE and UPDATE on the remote for that
-                profile. Until then a pass is PULL-ONLY: it fills the cache and
+                profile; --revoke puts it back to pull-only. Until a profile
+                is authorised a pass is PULL-ONLY: it fills the cache and
                 refuses to write the remote. charon does this for itself when it
                 can tell the cache is safe (this node is already syncing, or the
                 cache is empty); what is left is a non-empty cache of unknown
@@ -1926,6 +1927,15 @@ authorise_push() {   # <profile> <reason>
   printf 'AUTHORISED=%s\nREASON=%s\n' "$(date +%s)" "$2" >"$_apf"
 }
 
+# Back to pull-only. `rm -f` on ONE resolved file, never a recursive delete and
+# never a glob: the caller has already checked the profile exists, and the only
+# thing this may remove is the record named after it.
+revoke_push() {   # <profile>
+  _rpf=$(push_ok_file "$1")
+  [ -f "$_rpf" ] || return 0
+  rm -f "$_rpf"
+}
+
 # Is it SAFE to authorise without a human looking? Only when there is nothing of
 # unknown provenance to push. Two ways that holds:
 #   - this UNISON_DIR already has archives, so this node has been syncing and is
@@ -2828,15 +2838,32 @@ case "$MODE" in
   sweep)     shift; do_sweep "$@" ;;
   audit)     shift; do_audit "$@" ;;
   plan)      shift; do_plan "$@" ;;
+  # A GRANT WITH NO REVOKE IS HALF A DECISION. Until 2026-10-05 this verb could
+  # only authorise, so undoing it meant deleting a state file that nothing
+  # documented. Revoking is always SAFE (it only ever restricts what a pass may
+  # do), so unlike the grant it needs no warning about consequences.
   allow-push)
     shift
+    _apr=
+    case "${1:-}" in --revoke|-r) _apr=y; shift ;; esac
     [ -n "${1:-}" ] || { log_error "allow-push needs a profile name"; exit 2; }
     [ -f "$PROFILES_DIR/$1.conf" ] \
       || { log_error "unknown profile '$1'"; exit 2; }
+    if [ -n "$_apr" ]; then
+      if push_authorised "$1"; then
+        revoke_push "$1" || { log_error "could not revoke it"; exit 1; }
+        log_warn "profile '$1' is PULL-ONLY again; the next pass will fill the"\
+                 "cache and refuse to write the remote."
+      else
+        log_warn "profile '$1' was already pull-only; nothing to revoke."
+      fi
+      exit 0
+    fi
     authorise_push "$1" "allow-push, by hand" \
       || { log_error "could not record it"; exit 1; }
     log_warn "profile '$1' may now CREATE AND UPDATE on the remote."
-    log_warn "If that cache held a stale restore, the next pass pushes it." ;;
+    log_warn "If that cache held a stale restore, the next pass pushes it."
+    log_warn "Undo with '${APP_NAME%% *} allow-push --revoke $1'." ;;
   install)   do_install ;;
   uninstall) do_uninstall ;;
   config|status) do_status ;;

@@ -298,6 +298,37 @@ grep -q stale "$T/mnt/D/kept.txt" \
     was never in effect and the assertion above proved nothing"
 printf 'SOURCE=s:D\n' > "$CFG/profiles.d/docs.conf"
 
+#### --revoke: a grant with no revoke is half a decision ####
+# The authorisation is PERMANENT and survives reinstalls, which is right, and it
+# is therefore the one thing here a human may need to take back. Before this the
+# only way was deleting a state file nothing documented.
+_c allow-push docs >/dev/null 2>&1 || fail "allow-push failed"
+[ -f "$T/st/push-ok/docs" ] || fail "no record to revoke"
+_c allow-push --revoke docs >/dev/null 2>&1 || fail "--revoke exited non-zero"
+[ -f "$T/st/push-ok/docs" ] \
+  && fail "--revoke left the authorisation in place"
+# ...and the profile is pull-only again in BEHAVIOUR, not just on disk, which is
+# the only claim worth making: assert the remote, not the record.
+_stale
+mkdir -p "$T/uni"; : > "$T/uni/ar00000000000000000000000000000001"
+_c install >/dev/null 2>&1 || fail "install failed"
+[ -f "$T/st/push-ok/docs" ] || fail "the archive-bearing node did not authorise"
+_c allow-push --revoke docs >/dev/null 2>&1 || fail "--revoke failed"
+_c sync docs >/dev/null 2>&1 || fail "the pass after a revoke failed"
+[ -e "$T/mnt/D/resurrected.txt" ] \
+  && fail "a REVOKED profile still pushed to the remote. The record was removed
+    and the guard did not re-engage, so revoke is cosmetic."
+# idempotent, and it says so rather than failing
+out=$(_c allow-push --revoke docs 2>&1); rc=$?
+[ "$rc" = 0 ] || fail "revoking an already-pull-only profile exited $rc ($out)"
+printf '%s\n' "$out" | grep -qi 'already' \
+  || fail "a no-op revoke did not say so ($out)"
+# an unknown profile is still refused, flag or no flag
+_c allow-push --revoke nosuch >/dev/null 2>&1 \
+  && fail "--revoke accepted an unknown profile" || :
+_c allow-push --revoke >/dev/null 2>&1 \
+  && fail "--revoke with no profile was accepted" || :
+
 #### NO MIGRATION CLIFF: an existing node authorises itself ####
 # Every box already running charon has archives, so this release must not put
 # any of them into pull-only and stop their pushes.
