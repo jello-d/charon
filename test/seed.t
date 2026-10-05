@@ -81,7 +81,7 @@ printf '%s\n' "$_c" \
     that justifies install firing a background seed at all. Got: $_c"
 # and belt-and-braces: the remote must never appear as the DESTINATION
 printf '%s\n' "$_c" | awk '{print $3}' | grep -q '^gd:' \
-  && fail "the REMOTE was passed as the copy DESTINATION -- a seed would
+  && fail "the REMOTE was passed as the copy DESTINATION; a seed would
     overwrite the authoritative copy with the cache ($_c)" || :
 
 # --- THE SEED MUST NOT PULL charon's OWN LITTER DOWN -------------------------

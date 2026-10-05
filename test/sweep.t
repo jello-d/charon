@@ -114,7 +114,7 @@ _uni -ignore 'Name .unison.*.unison.tmp' >/dev/null 2>&1 || :
   so the cleanup assertion below would pass for the wrong reason"
 [ -z "$(_crumbs_in "$R")" ] \
   || fail "WITH the Tier 0 ignore set, unison left its own temp behind:
-  $(_crumbs_in "$R") -- the ignore IS blocking cleanup, which would make the
+  $(_crumbs_in "$R"): the ignore IS blocking cleanup, which would make the
   sweeper's rationale (and prf:charon's comment) wrong"
 
 # 1d. THE ORPHANING CONDITION: the path stops needing propagation while a temp

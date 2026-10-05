@@ -174,7 +174,7 @@ _sync
   || fail "CONFLICT=newer did not let the newer side win"
 [ "$(_copies "$T/src/D")" -ge 1 ] \
   || fail "CONFLICT=newer: expected the loser copy on the remote when the
-    cache wins -- if this changed, the docs need updating"
+    cache wins; if this changed, the docs need updating"
 
 #### a SUBTREE with a space really does reconcile ####
 # Not hypothetical: the Drive this was built for contains "Google Earth". The

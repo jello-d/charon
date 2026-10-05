@@ -60,7 +60,7 @@ _m() { merge_verdict "$1" "$2"; printf '%s' "$?"; }
   what it can before concluding anything about the fault"
 [ "$(_m 2 1)" = 1 ] \
   || fail "fault + drift gave $(_m 2 1), so the answer depends on the ORDER the
-  two halves ran in -- which is the bug this rule replaced"
+  two halves ran in, which is the bug this rule replaced"
 # A verdict charon does not define is not flattened into one: an unexplained
 # failure is at least worth looking at, so it reports drift.
 [ "$(_m 0 3)" = 1 ] || fail "an undefined verdict was treated as clean"

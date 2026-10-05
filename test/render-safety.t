@@ -47,7 +47,7 @@ for lvl in 1 2 3 4; do
     || fail "at LOG_LEVEL=$lvl resolved_notify returned
     [$_v]
   instead of the bare path [$T/bin/mynotifier]. Its stdout IS the value, so a
-  log line on stdout becomes part of it -- and a multi-line value makes the
+  log line on stdout becomes part of it, and a multi-line value makes the
   renderer's sed fail, which used to blank the unit file."
   # And it must be ONE line, which is the property sed actually cares about.
   [ "$(printf '%s' "$_v" | wc -l)" = 0 ] \

@@ -676,7 +676,7 @@ _uw=$(unwedge_profile docs 2>&1)
 [ -e "$W2" ] && fail "the mount-side temp survived the unwedge"
 [ -n "$(failed_paths docs)" ] \
   || fail "the unwedge cleared the failure RECORD; it removes the obstacle, it
-  does not decide the fault is over -- only a real pass can say that"
+  does not decide the fault is over: only a real pass can say that"
 case $_uw in
   *"3 passes running"*) : ;;
   *) fail "the unwedge said nothing a human could act on: $_uw" ;;
