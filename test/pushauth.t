@@ -250,10 +250,21 @@ _c allow-push docs >/dev/null 2>&1 || fail "allow-push docs failed"
 grep -q '^REASON=' "$T/st/push-ok/docs" \
   || fail "the authorisation records no REASON; a decision with no artifact
     explaining itself is one nobody can audit later"
-_c sync docs >/dev/null 2>&1 || fail "an authorised pass failed"
+out=$(_c sync docs 2>&1) || fail "an authorised pass failed ($out)"
 [ -e "$T/mnt/D/resurrected.txt" ] \
   || fail "after allow-push the pass still refused to push; the authorisation
     did not take effect"
+# AN ALREADY-AUTHORISED PASS MUST NOT RE-AUTHORISE. Two things go wrong if the
+# self-authorisation is not gated on the profile actually being pull-only: the
+# record is rewritten, so the ORIGINAL reason (and with it the audit trail of
+# who decided and why) is destroyed by a routine pass; and the announcement
+# fires every pass, which is the warning nobody reads. Found by mutation.
+grep -q 'REASON=allow-push, by hand' "$T/st/push-ok/docs" \
+  || fail "a routine authorised pass REWROTE the authorisation record, losing
+    why it was granted: $(cat "$T/st/push-ok/docs")"
+printf '%s\n' "$out" | grep -q 'withheld NOTHING' \
+  && fail "an already-authorised pass announced a self-authorisation; that
+    fires on every pass and is the warning nobody reads ($out)" || :
 _c check 2>&1 | grep -qi 'PULL-ONLY' \
   && fail "check still calls an authorised profile pull-only" || :
 out=$(_c status 2>&1)
@@ -297,6 +308,50 @@ grep -q stale "$T/mnt/D/kept.txt" \
   || fail "once authorised the cache did NOT win the conflict, so CONFLICT=local
     was never in effect and the assertion above proved nothing"
 printf 'SOURCE=s:D\n' > "$CFG/profiles.d/docs.conf"
+
+#### A PULL-ONLY PASS THAT WITHHELD NOTHING AUTHORISES ITSELF ####
+# This narrows the human gate to the only case needing one. A cache restored
+# from a recent backup has nothing of unknown provenance to push, and making a
+# human confirm that is the kind of nag that gets disabled.
+#
+# THE EVIDENCE IS THE EXIT CODE, measured against real unison before being
+# trusted: a pull-only pass that withheld ANY write exits 1 with a `<=?=>` row,
+# and the shapes that exit 0 wrote nothing and withheld nothing.
+_stale
+rm -f "$T/cache/D/resurrected.txt"   # the ONLY unvouchable thing in the fixture
+# the cache still differs (stale kept.txt) but every difference resolves toward
+# the mount, so nothing is withheld FROM the remote.
+_c install >/dev/null 2>&1 || fail "install failed"
+[ -f "$T/st/push-ok/docs" ] \
+  && fail "the fixture authorised at install, so the pass below proves nothing"
+out=$(_c sync docs 2>&1); rc=$?
+[ "$rc" = 0 ] || fail "a pass with nothing to withhold exited $rc ($out)"
+[ -f "$T/st/push-ok/docs" ] \
+  || fail "a pull-only pass withheld NOTHING and the profile stayed gated. The
+    human gate must cover only the case where there is really something
+    unvouchable to push ($out)"
+grep -q 'REASON=pull-only pass withheld nothing' "$T/st/push-ok/docs" \
+  || fail "the self-authorisation did not record WHY it was safe:
+$(cat "$T/st/push-ok/docs")"
+printf '%s\n' "$out" | grep -q 'withheld NOTHING' \
+  || fail "charon started writing the remote without saying so. This changes
+    what the node does to a SHARED remote, so it cannot be silent ($out)"
+printf '%s\n' "$out" | grep -q 'allow-push --revoke' \
+  || fail "the announcement does not say how to undo it ($out)"
+
+#### ...AND A PASS THAT WITHHELD SOMETHING MUST NOT ####
+# The other direction, and the one that matters: as long as the cache holds
+# something the remote has not got, no number of passes may self-authorise.
+_stale
+_c install >/dev/null 2>&1 || fail "install failed"
+for _i in 1 2 3; do
+  _c sync docs >/dev/null 2>&1 || fail "pull-only pass $_i exited non-zero"
+  [ -f "$T/st/push-ok/docs" ] \
+    && fail "pass $_i SELF-AUTHORISED while still withholding a file the fleet
+      deleted. That is the whole hazard, reached the long way round."
+  [ -e "$T/mnt/D/resurrected.txt" ] \
+    && fail "the zombie reached the remote on pass $_i" || :
+done
 
 #### --revoke: a grant with no revoke is half a decision ####
 # The authorisation is PERMANENT and survives reinstalls, which is right, and it

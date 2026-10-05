@@ -47,7 +47,9 @@ usage: charon <command> [args...]
                        is allowed, a pass is PULL-ONLY: it fills the cache and
                        refuses to write the remote, so a stale cache cannot
                        resurrect files the fleet deleted. charon allows itself
-                       when it can tell the cache is safe. --revoke undoes it.
+                       when it can tell the cache is safe, including after a
+                       pull-only pass that withheld nothing. --revoke undoes
+                       it.
   install              install the units, profiles, and timers
   uninstall            remove them
   source <list|show|probe|up|down> [name]

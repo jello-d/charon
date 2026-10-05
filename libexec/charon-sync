@@ -227,9 +227,10 @@ modes:
                 authorise this node to CREATE and UPDATE on the remote for that
                 profile; --revoke puts it back to pull-only. Until a profile
                 is authorised a pass is PULL-ONLY: it fills the cache and
-                refuses to write the remote. charon does this for itself when it
-                can tell the cache is safe (this node is already syncing, or the
-                cache is empty); what is left is a non-empty cache of unknown
+                refuses to write the remote. charon does this for itself
+                when it can tell the cache is safe (this node is already
+                syncing, the cache is empty, or a pull-only pass withheld
+                nothing); what is left is a non-empty cache of unknown
                 provenance, where pushing could resurrect deleted files. Review
                 'plan' first.
   install       install Unison profiles, systemd units/timers, and seed
@@ -2043,6 +2044,37 @@ run_sync_profile() {
   fi
 
   if [ $RET -eq 0 ]; then
+    # A PULL-ONLY PASS THAT WITHHELD NOTHING AUTHORISES ITSELF, which narrows
+    # the human gate to the only case that needs one: a cache that really does
+    # hold content the remote has not got. A cache restored from a recent
+    # backup, or copied from a node that was in step, has nothing to vouch for,
+    # and making a human confirm that is the kind of nag that gets disabled.
+    #
+    # THE EVIDENCE IS THE EXIT CODE, AND IT WAS MEASURED BEFORE BEING TRUSTED
+    # (2026-10-05, eight cases against real unison). A pull-only pass that
+    # withheld ANY write exits 1 with a `<=?=>` row: a create, an update, a
+    # delete, an mtime-only change, and a withheld push riding alongside a
+    # successful pull, which does NOT mask the skip. The three cases that exit 0
+    # (identical replicas, a pure pull, a conflict resolved toward the mount)
+    # wrote nothing to the remote and withheld nothing. So rc 0 here means the
+    # guard had nothing to do.
+    #
+    # THE FIRST ATTEMPT AT THAT MEASUREMENT SAID THE OPPOSITE and was wrong in a
+    # way worth remembering: its fixture wrote "v1" then "v2", the same SIZE in
+    # the same second, and `fastcheck` compares mtime and size, so unison never
+    # saw the change at all and reported "replicas have not changed". That read
+    # as a write withheld silently at rc 0. Change the LENGTH and sleep past the
+    # second boundary, or the reconciler is given nothing to find.
+    #
+    # fastcheck CANNOT hide anything in the case this gate exists for, because
+    # that case is a cache with NO archive: there is no previous record to take
+    # a shortcut against, so every cache-only path is seen as new.
+    if [ -n "$CHARON_PULL_ONLY_ROOT" ]; then
+      authorise_push "$PROFILE" "pull-only pass withheld nothing" \
+        && log_warn "profile '$PROFILE': the pull-only pass withheld NOTHING,"\
+                    "so this node is now authorised to write the remote."\
+                    "Undo with '${APP_NAME%% *} allow-push --revoke $PROFILE'."
+    fi
     notify clear "$SERVICE_NAME"; return 0
   fi
   # A PULL-ONLY PASS REPORTS 1 WHEN IT REFUSED A PUSH, and that is the guard

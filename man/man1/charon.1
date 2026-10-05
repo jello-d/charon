@@ -363,7 +363,7 @@ pass refuses to create or update anything there, while still bringing the cache
 up to date, and says so at each pass. Nothing is lost: whatever the cache held
 stays exactly where it is, locally, for you to look at.
 .PP
-charon allows itself in the two cases it can tell are safe, so an existing
+charon allows itself in the cases it can tell are safe, so an existing
 installation notices none of this:
 .TP
 .B this node is already syncing
@@ -372,6 +372,13 @@ nothing of unknown provenance to push.
 .TP
 .B the cache subtree is empty
 there is nothing local to resurrect, which is the ordinary first seed.
+.TP
+.B a pass withheld nothing
+once a pull-only pass completes having refused NOTHING, there was nothing of
+unknown provenance to refuse, and the profile authorises itself and says so. A
+cache restored from a recent backup, or copied from a node that was in step,
+clears itself on its first pass. This is why the gate covers only the case where
+the cache really does hold something the remote has not got.
 .PP
 What is left is a NON-EMPTY cache on a node with no history, and that charon
 will not vouch for. Run
