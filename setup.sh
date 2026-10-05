@@ -30,6 +30,50 @@ set -eu
 
 PKG=charon
 VERSION=0.1.0
+
+# THE VERSION HAS TO MOVE WITH THE BUILD, or it cannot answer the one question a
+# multi-node fleet needs to ask.
+#
+# `VERSION=0.1.0` alone is hand-set and had not changed across any of this
+# project's releases, so on 2026-10-04 three nodes running three different
+# commits all reported `charon 0.1.0`. That mattered the same day: the
+# conflict-twin fix is FLEET-WIDE OR NOTHING, because one node still uploading
+# twins re-pollutes the shared remote for every other node, and nothing on any
+# box could have told you a peer was behind.
+#
+# So the release number stays human-facing and a BUILD id is stamped beside it.
+# Resolved from the SOURCE tree at install time and written INTO the payload,
+# because the payload is a copy with no git history of its own and is the thing
+# that actually runs.
+#
+# WHAT charon DELIBERATELY DOES NOT DO: discover or poll its peers. Which nodes
+# exist is a FLEET FACT, and this project's ownership rule puts those with the
+# integrator. charon's job is to make the answer COMPARABLE; comparing is
+# somebody else's.
+BUILD_FILE=share/$PKG/BUILD
+
+resolved_build() {
+  # A git checkout knows; a payload or a tarball does not, and says so rather
+  # than inventing a number.
+  if command -v git >/dev/null 2>&1 \
+     && git -C "$_root" rev-parse --git-dir >/dev/null 2>&1; then
+    _rb=$(git -C "$_root" log -1 --format=%h 2>/dev/null) || _rb=
+    _rd=$(git -C "$_root" log -1 --format=%cs 2>/dev/null) || _rd=
+    if [ -n "$_rb" ]; then
+      # A DIRTY TREE IS NOT THE COMMIT IT CLAIMS, and saying so is the point: an
+      # install from an edited checkout must not be mistaken for the pushed
+      # commit when two nodes are compared.
+      git -C "$_root" diff --quiet HEAD 2>/dev/null || _rb="$_rb-dirty"
+      printf '%s %s\n' "$_rb" "${_rd:-unknown}"
+      return 0
+    fi
+  fi
+  # An already-installed payload carries forward what it was stamped with.
+  if [ -f "$_root/$BUILD_FILE" ]; then
+    head -1 "$_root/$BUILD_FILE"; return 0
+  fi
+  printf 'unknown unknown\n'
+}
 # shellcheck disable=SC1007  # CDPATH= is a deliberate clear, not a typo
 _root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
@@ -130,6 +174,10 @@ _payload_stage() {
     [ -f "$_ps_new/$_f" ] && continue
     bad "staged payload has no $_f"; rm -rf -- "$_ps_new"; return 1
   done
+  # Stamp the build INTO the staged tree, so the payload answers for itself with
+  # neither git nor a source checkout present.
+  resolved_build > "$_ps_new/$BUILD_FILE" \
+    || { bad "could not stamp the build id"; rm -rf -- "$_ps_new"; return 1; }
   if [ -e "$_pay" ] || [ -L "$_pay" ]; then
     mv -- "$_pay" "$_ps_old" \
       || { bad "could not move the old payload aside"; return 1; }
@@ -325,7 +373,7 @@ case "${1:-install}" in
   uninstall) do_uninstall ;;
   check)     do_check; exit "$RC" ;;
   test)      exec sh "$_root/test/run" ;;
-  version)   echo "$PKG $VERSION" ;;
+  version)   echo "$PKG $VERSION ($(resolved_build))" ;;
   -h|--help|help) echo "$_U" ;;
   *) echo "setup.sh: unknown command '${1:-}'" >&2; echo "$_U" >&2; exit 2 ;;
 esac

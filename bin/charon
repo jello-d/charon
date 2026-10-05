@@ -25,6 +25,7 @@ set -eu
 _self=$(readlink -f "$0" 2>/dev/null || echo "$0")
 _libexec=$(dirname "$_self")/../libexec
 _lib=$(dirname "$_self")/../lib
+_share=$(dirname "$_self")/../share/charon
 
 usage() {
   cat <<EOF
@@ -127,6 +128,18 @@ case "${1:-}" in
   # --- kept working: the older spellings ---
   mount)   shift; _mount "$@" ;;
 
+  # WHAT IS RUNNING HERE, answerable on a box with neither git nor a source
+  # tree. A fleet sharing one remote needs it: a node on an older charon still
+  # uploads conflict twins and re-pollutes the remote for everyone, and until
+  # the build was stamped, three nodes on three different commits all reported
+  # the same hand-set 0.1.0. Reads the payload's own stamp, and says UNSTAMPED
+  # rather than guessing when there is none.
+  version|--version|-V)
+           if [ -r "$_share/BUILD" ]; then
+             printf 'charon %s\n' "$(head -1 "$_share/BUILD")"
+           else
+             printf 'charon UNSTAMPED (no %s/BUILD)\n' "$_share"
+           fi ;;
   ""|-h|--help|help) usage ;;
   *) echo "charon: unknown command '$1'" >&2; usage >&2; exit 2 ;;
 esac

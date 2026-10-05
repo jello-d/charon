@@ -281,6 +281,55 @@ done
   && fail "the migration wrote THROUGH the old share link into the source" || :
 
 # ------------------------------------------------------------------ part 5 ---
+# --- THE BUILD STAMP: a fleet must be able to compare two nodes --------------
+# `VERSION=0.1.0` is hand-set and had not moved across any release, so on
+# 2026-10-04 three nodes running three different commits all reported `charon
+# 0.1.0`. That is not cosmetic with a shared remote: the conflict-twin fix is
+# fleet-wide or nothing, because one node still uploading twins re-pollutes the
+# remote for every other node, and nothing on any box could have said a peer was
+# behind.
+_bf=$PREFIX/share/charon/share/charon/BUILD
+[ -f "$_bf" ] || fail "install did not stamp a build id at $_bf"
+_stamp=$(head -1 "$_bf")
+[ -n "$_stamp" ] || fail "the build stamp is empty"
+# This repo IS a git checkout, so the stamp must name a commit, not 'unknown'.
+_re='^[0-9a-f]{7,}(-dirty)? [0-9]{4}-[0-9]{2}-[0-9]{2}$'
+printf '%s\n' "$_stamp" | grep -qE "$_re" \
+  || fail "the build stamp is not <short-sha>[-dirty] <date>: '$_stamp'"
+
+# the installed command must report it, with neither git nor a source tree
+_cv=$(PATH="$XDG_BIN_HOME:$PATH" charon --version 2>&1)
+printf '%s\n' "$_cv" | grep -qF "$_stamp" \
+  || fail "charon --version does not report the stamped build: got '$_cv',
+    stamp is '$_stamp'"
+for _v in version -V; do
+  PATH="$XDG_BIN_HOME:$PATH" charon "$_v" 2>&1 | grep -qF "$_stamp" \
+    || fail "'charon $_v' does not report the build stamp"
+done
+
+# AN UNSTAMPED TREE MUST SAY SO, not invent a version: a fabricated answer is
+# worse than no answer when the whole point is comparing two nodes.
+_un=$T/unstamped
+mkdir -p "$_un/bin" "$_un/share/charon" "$_un/lib"
+cp "$HERE/bin/charon" "$_un/bin/charon"
+_uv=$(sh "$_un/bin/charon" --version 2>&1)
+printf '%s\n' "$_uv" | grep -qi 'UNSTAMPED' \
+  || fail "a payload with no BUILD file did not say UNSTAMPED: '$_uv'"
+printf '%s\n' "$_uv" | grep -qE '[0-9a-f]{7,} [0-9]{4}-' \
+  && fail "an unstamped payload invented a build id: '$_uv'" || :
+
+# A DIRTY CHECKOUT IS NOT THE COMMIT IT CLAIMS. Two nodes installed from the
+# same sha, one from an edited tree, are NOT running the same code, and a stamp
+# that hid that would make the comparison lie.
+_dirty=$T/dirtysrc
+cp -R "$HERE" "$_dirty" 2>/dev/null || :
+if [ -d "$_dirty/.git" ]; then
+  printf '\n# scratch edit\n' >> "$_dirty/README.md"
+  _ds=$(cd "$_dirty" && sh setup.sh version 2>&1)
+  printf '%s\n' "$_ds" | grep -q 'dirty' \
+    || fail "an EDITED checkout reported a clean build id: '$_ds'"
+fi
+
 # bootstrap seeds the example into an empty profiles.d, and is a no-op once full
 _setup bootstrap >/dev/null || fail "bootstrap errored"
 [ -f "$XDG_CONFIG_HOME/charon/profiles.d/example.conf" ] \
