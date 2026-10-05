@@ -2172,6 +2172,21 @@ do_status() {
       printf '    policy:   conflict=%s delete=%s%s\n' \
         "${_cf:-remote}" "${_dl:-propagate}" \
         "$([ -n "$_ig" ] && printf ' ignore=%s' "$_ig")"
+      # WHETHER THIS NODE PUSHES AT ALL, which is the most consequential thing
+      # about a profile and was the one thing status did not say. A pull-only
+      # node syncs happily, reports every pass successful and never propagates a
+      # local change, so a human reading "last run: OK" would have no way to
+      # know. Shouted, because it is the unusual state.
+      if push_authorised "$_p"; then
+        printf '    push:     allowed, since %s\n' \
+          "$(human_age "$(sed -n 's/^AUTHORISED=//p' "$(push_ok_file "$_p")" \
+               | head -1)" "$(date +%s)")"
+      else
+        printf '    push:     PULL-ONLY, this node will not write the remote\n'
+        printf '              review: %s plan %s\n' "${APP_NAME%% *}" "$_p"
+        printf '              allow:  %s allow-push %s\n' \
+          "${APP_NAME%% *}" "$_p"
+      fi
       printf '    artifacts: %s\n' "$UNISON_DIR/charon-$_p.prf"
     done
     echo

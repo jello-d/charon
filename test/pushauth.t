@@ -186,6 +186,20 @@ printf '%s\n' "$out" | grep -q '\[WARN\].*PULL-ONLY' \
     repair that cannot work, which is the futile-loop bug one domain over:
 $(printf '%s\n' "$out" | grep -E '\[FAIL\]|\[FAULT\]')"
 
+#### status: the HUMAN view must say whether this node pushes ####
+# A pull-only node syncs happily and reports every pass successful while never
+# propagating a local change, so "last run: OK" is actively misleading on its
+# own. status is the one command whose whole job is what is true now.
+out=$(_c status 2>&1)
+printf '%s\n' "$out" | grep -q 'push:.*PULL-ONLY' \
+  || fail "status did not say the node is pull-only. A reader sees 'last run:
+    OK' and has no way to know nothing is being pushed ($out)"
+printf '%s\n' "$out" | grep -q 'allow-push docs' \
+  || fail "status named the state without naming the remedy ($out)"
+# status NEVER writes and NEVER fails, which is its contract
+[ -f "$T/st/push-ok/docs" ] \
+  && fail "status authorised the profile; it must never write" || :
+
 #### plan: shows what WOULD happen, and writes NOTHING ####
 # FRESH FIXTURE. The failure inductions above left unison's archive knowing
 # about the unpushed file, so the plan had nothing to say about it and the
@@ -242,6 +256,13 @@ _c sync docs >/dev/null 2>&1 || fail "an authorised pass failed"
     did not take effect"
 _c check 2>&1 | grep -qi 'PULL-ONLY' \
   && fail "check still calls an authorised profile pull-only" || :
+out=$(_c status 2>&1)
+printf '%s\n' "$out" | grep -q 'push:.*allowed' \
+  || fail "status does not report an authorised profile as allowed ($out)"
+printf '%s\n' "$out" | grep -q 'push:.*PULL-ONLY' \
+  && fail "status still calls an authorised profile pull-only ($out)" || :
+printf '%s\n' "$out" | grep -qi 'ago ago' \
+  && fail "status printed 'ago ago'; human_age already supplies it ($out)" || :
 
 # AND A PROFILE IN STEP MUST SAY SO, not report nothing. `-terse` stops unison
 # printing its own "Nothing to do", so the filtered body comes back EMPTY, and
