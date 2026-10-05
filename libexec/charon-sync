@@ -2630,10 +2630,21 @@ do_plan() {   # [profile]
     # whatever unison decides. The boilerplate of the no-archive warning is
     # dropped and its first line kept: that line is the heart of why a node is
     # held pull-only; the paragraph under it is 18 lines of advice about DHCP.
-    unison "charon-$_pl" -ui text -batch -auto -silent=false -dumbtty \
+    # `-terse` drops the scan PROGRESS display and keeps everything else. It is
+    # not cosmetic: the progress line ends in \r, so on a real tree it rode on
+    # the same output line as the next message and produced
+    # "\ Finance/Some File.pdf      Reconciling changes". The \r squeeze stays
+    # as well, since -terse governs unison's own status messages and not
+    # whatever a future version decides to redraw.
+    #
+    # The no-archive warning SURVIVES -terse, which is wanted: its first line is
+    # the heart of why a node is held pull-only. Only the boilerplate under it
+    # is dropped, 18 lines of advice about DHCP and archive formats.
+    unison "charon-$_pl" -ui text -batch -auto -silent=false -terse -dumbtty \
       -nocreation "$_plm" -noupdate "$_plm" -nodeletion "$_plm" \
       -nocreation "$_plc" -noupdate "$_plc" -nodeletion "$_plc" \
       </dev/null 2>&1 \
+      | tr '\r' '\n' \
       | sed -n '/^This can happen either/,/^environment variable/d; p' \
       | grep -vE '^$|^Contacting|^Looking for changes$|^Reconciling changes$' \
       | sed 's/^/   /'
