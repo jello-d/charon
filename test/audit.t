@@ -126,16 +126,37 @@ out=$(_parse "$_neg" Docs)
 printf '%s\n' "$out" | grep -qx 'NOCONTENT=Docs/a.txt' \
   || fail "with the mount's view UNMEASURED, a -1 was not reported: $out"
 
-# THE INCIDENT SHAPE SURVIVES THE CHANGE: a real object and a -1 at one path.
-# The mount presents the path (the real object), so the -1 is still a finding,
-# and the duplicate is still the hazard.
-_realonly='[{"Path":"x.xlsx","Name":"x.xlsx","Size":28226}]'
-out=$(_parse_skip "$_both" "$_realonly" Docs)
+# A GDOC BESIDE A REAL FILE IS TWO OBJECTS ON THE REMOTE AND ONE TO THE MOUNT,
+# so the mount stays deterministic and nothing conflicts. Counting the RAW
+# listing reported exactly this benign pair as the 2026-10-04 hazard, which is
+# the same error as reading Size alone, one level up. Measured on the live
+# remote: two such pairs, the mount seeing one object each.
+# IDs are what make it per-OBJECT: the path IS presented (via the real
+# sibling), so a path-level test calls the gdoc unexplained.
+_pair='[{"Path":"x.xlsx","Name":"x.xlsx","Size":28226,"ID":"real1"},
+        {"Path":"x.xlsx","Name":"x.xlsx","Size":-1,"ID":"gdoc1"}]'
+_pairmount='[{"Path":"x.xlsx","Name":"x.xlsx","Size":28226,"ID":"real1"}]'
+out=$(_parse_skip "$_pair" "$_pairmount" Docs)
+[ -z "$out" ] \
+  || fail "a gdoc beside a real file was reported as a finding. The mount sees
+ONE object there and presents the real one, so it is deterministic and nothing
+conflicts: $out"
+
+# THE REAL 2026-10-04 HAZARD STILL IS ONE: the MOUNT itself sees two objects at
+# one path, so the content it presents flips between passes.
+_mountdup='[{"Path":"x.xlsx","Name":"x.xlsx","Size":28226,"ID":"a"},
+            {"Path":"x.xlsx","Name":"x.xlsx","Size":28226,"ID":"b"}]'
+out=$(_parse_skip "$_mountdup" "$_mountdup" Docs)
 printf '%s\n' "$out" | grep -qx 'DUPE=2 Docs/x.xlsx' \
-  || fail "the 2026-10-04 duplicate shape stopped being reported: $out"
+  || fail "the 2026-10-04 hazard stopped being reported. The MOUNT sees two
+objects at this path, which is what makes its content non-deterministic: $out"
+
+# ...and a -1 object the MOUNT WILL USE is still unexplained, because an
+# export-only object would have been omitted and a real one would have a size.
+_mountneg='[{"Path":"x.xlsx","Name":"x.xlsx","Size":-1,"ID":"odd"}]'
+out=$(_parse_skip "$_mountneg" "$_mountneg" Docs)
 printf '%s\n' "$out" | grep -qx 'NOCONTENT=Docs/x.xlsx' \
-  || fail "the -1 half of a duplicate pair was reclassified as export-only. The
-mount DOES present that path, so it is the original hazard: $out"
+  || fail "a sizeless object the mount WILL present was waved through: $out"
 unset CHARON_LIB_ONLY
 
 #### THE RECORD + THE VERB, with a stubbed rclone ####

@@ -509,12 +509,17 @@ skipf = os.environ.get("CHARON_AUDIT_SKIPFILE", "")
 # The paths the mount WILL present. None means "not measured", and then every
 # -1 is reported as unexplained rather than waved through: an absent
 # measurement must not read as an all-clear.
-presented = None
+mount_ids = None       # the OBJECTS the mount will use
+mount_count = None     # objects per path, AS THE MOUNT SEES THEM
 if skipf and os.path.exists(skipf):
     try:
-        presented = set(f.get("Path", "") for f in json.load(open(skipf)))
+        srows = json.load(open(skipf))
+        mount_ids = set(f.get("ID", "") for f in srows)
+        mount_count = defaultdict(int)
+        for f in srows:
+            mount_count[f.get("Path", "")] += 1
     except Exception:
-        presented = None
+        mount_ids, mount_count = None, None
 try:
     rows = json.load(sys.stdin)
 except Exception:
@@ -524,18 +529,47 @@ for f in rows:
     by[f.get("Path", "")].append(f)
 for path, objs in sorted(by.items()):
     full = pre + "/" + path if pre else path
-    if len(objs) > 1:
-        print("DUPE=%d %s" % (len(objs), full))
+    # THE HAZARD IS COUNTED IN THE VIEW THE MOUNT HAS, not in the full
+    # listing (and no apostrophe in here: this python sits inside a
+    # single-quoted shell string, so one closes it and dash reports a syntax
+    # error forty lines away). A
+    # gdoc sitting beside a real file is TWO objects on the remote and ONE to
+    # the mount, so the mount stays deterministic and nothing conflicts.
+    # Counting the raw listing reported exactly that benign pair as the
+    # 2026-10-04 hazard, which is the same error as reading Size alone, one
+    # level up. Measured on the live remote: two such pairs, mount sees one
+    # object each and presents the real one.
+    n = mount_count[path] if mount_count is not None else len(objs)
+    if n > 1:
+        print("DUPE=%d %s" % (n, full))
     for o in objs:
         if o.get("Size", 0) != -1:
             continue
-        if presented is not None and path not in presented:
-            # Export-only and omitted by the mount: a Google-native doc.
-            print("SKIPPED=%s" % full)
+        # PER OBJECT, BY ID, because "is this path presented" is the wrong
+        # question: a path can be presented via its REAL sibling while this
+        # particular object is omitted. Falls back to the path test when the
+        # backend reports no ID.
+        oid = o.get("ID", "")
+        if mount_ids is not None and oid:
+            omitted = oid not in mount_ids
+        elif mount_count is not None:
+            omitted = mount_count[path] == 0
         else:
-            # No stored size, yet the mount WILL present it. That is the
-            # 2026-10-04 shape when it rides alongside a real object, and
-            # otherwise something charon cannot account for. Say so either way.
+            omitted = False   # unmeasured is never an all-clear
+        # ONLY WORTH SAYING WHEN THE WHOLE PATH IS ABSENT FROM THE MOUNT. A
+        # gdoc with a real sibling IS skipped, but the FILE still syncs via the
+        # sibling, so reporting it would claim "this never reaches your cache"
+        # about a file that does. Measured: of four export-only objects, two
+        # have a real sibling the mount presents and two do not, and only the
+        # latter two are missing from the cache.
+        if omitted and mount_count is not None and mount_count[path] == 0:
+            print("SKIPPED=%s" % full)
+        elif omitted:
+            pass          # skipped, but the path syncs via its real sibling
+        else:
+            # No stored size, and the MOUNT WILL USE THIS OBJECT. An
+            # export-only object would have been omitted and a real one would
+            # have a size, so charon cannot account for it. Say so.
             print("NOCONTENT=%s" % full)
 '
 }
