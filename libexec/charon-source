@@ -388,11 +388,21 @@ do_audit() {   # <source>
   mkdir -p "${_af%/*}" || return 2
   _at=$(mktemp) || return 2
   _arc=0
-  printf 'AUDITED=%s\nREMOTE=%s\n' "$(date +%s)" "$_r" >"$_at"
+  # SCHEMA IS DECLARED, so a reader can tell a record written before the
+  # skip-gdocs measurement existed. Such a record classified every Google doc as
+  # a contentless object, which is the false FAULT this release fixes, and
+  # check must NOT re-derive a verdict from it.
+  printf 'SCHEMA=2\nAUDITED=%s\nREMOTE=%s\n' "$(date +%s)" "$_r" >"$_at"
+  _ask=$(mktemp) || { rm -f "$_at"; return 2; }
   for _as in $_asub; do
+    # The mount's own view, taken with the flag the mount runs with, so
+    # "does this reach the cache" is measured rather than inferred.
     "$RCLONE_BIN" lsjson "${_r}:$_as" --recursive --files-only --no-modtime \
-      2>/dev/null | audit_report "$_as" >>"$_at" || _arc=2
+      --drive-skip-gdocs >"$_ask" 2>/dev/null || : >"$_ask"
+    "$RCLONE_BIN" lsjson "${_r}:$_as" --recursive --files-only --no-modtime \
+      2>/dev/null | audit_report "$_as" "$_ask" >>"$_at" || _arc=2
   done
+  rm -f "$_ask"
   # NO SUMMARY COUNTS IN THE RECORD. The first version wrote `NOCONTENT=<count>`
   # alongside `NOCONTENT=<path>` detail lines, so the same key meant two things
   # and a reader taking the first match got a PATH where it wanted a number
@@ -401,6 +411,7 @@ do_audit() {   # <source>
   # way for a summary to disagree with what it summarises.
   _ad=$(grep -c '^DUPE=' "$_at" 2>/dev/null) || _ad=0
   _an=$(grep -c '^NOCONTENT=' "$_at" 2>/dev/null) || _an=0
+  _as_k=$(grep -c '^SKIPPED=' "$_at" 2>/dev/null) || _as_k=0
   # Replace the live record only once it is complete, so a failed listing leaves
   # yesterday's answer rather than an empty one that reads as "all clear".
   if [ "$_arc" = 0 ]; then
@@ -411,21 +422,48 @@ do_audit() {   # <source>
               "is unchanged rather than replaced with a partial one"
     return 2
   fi
+  # EXPORT-ONLY OBJECTS ARE NOT A FINDING, and reporting them as one is what
+  # faulted this fleet for four days. They are Google-native docs: the mount
+  # omits them by design, so they manufacture no conflict and reach no cache.
+  # Said out loud anyway, because "this file will never appear in your cache" is
+  # something a user wants to know, and nothing else says it.
+  if [ "$_as_k" != 0 ]; then
+    log_warn "source '$1': $_as_k export-only object(s) on the remote (a"\
+             "Google-native doc has no stored size). The mount SKIPS these, so"\
+             "they never reach the cache and never conflict. Not a fault. To"\
+             "sync one, convert it back to a real file in the Drive UI:"
+    # $_af, never $_at: the staged file has already been renamed into place by
+    # this point, which is why the two seds below read $_af too.
+    sed -n 's/^SKIPPED=/    export-only: /p' "$_af" | head -10
+  fi
   if [ "$_ad" = 0 ] && [ "$_an" = 0 ]; then
-    log_info "source '$1': remote clean, no duplicate names, no contentless"\
-             "objects (across: $(echo "$_asub" | tr '\n' ' '))"
+    log_info "source '$1': remote clean, no duplicate names (across:"\
+             "$(echo "$_asub" | tr '\n' ' '))"
     return 0
   fi
-  log_error "source '$1': the remote has $_ad duplicated path(s) and $_an"\
-            "object(s) with no content stream."
-  log_error "A duplicate name makes the mount non-deterministic and"\
-            "MANUFACTURES conflicts on every node."
-  log_error "Remedy (charon will not do this for you, it means choosing which"\
-            "object survives):"
-  log_error "  rclone dedupe --dedupe-mode largest ${_r}:<subtree>"
-  log_error "Verify first with --dry-run, and note a file you do not OWN"\
-            "returns 403 and must be fixed from the Drive UI."
-  sed -n 's/^DUPE=/  dup: /p;s/^NOCONTENT=/  no content: /p' "$_af" | head -10
+  # TWO FINDINGS, REPORTED SEPARATELY. One message used to carry both counts and
+  # then offer only the DEDUPE remedy, so a remote with 0 duplicates and 4
+  # export-only objects was told to run `rclone dedupe`, which had nothing to
+  # collapse, under an explanation about duplicate names that did not apply.
+  if [ "$_ad" != 0 ]; then
+    log_error "source '$1': $_ad duplicated path(s) on the remote. A duplicate"\
+              "name makes the mount non-deterministic and MANUFACTURES"\
+              "conflicts on every node."
+    log_error "Remedy (charon will not do this for you, it means choosing"\
+              "which object survives):"
+    log_error "  rclone dedupe --dedupe-mode largest ${_r}:<subtree>"
+    log_error "Verify first with --dry-run, and note a file you do not OWN"\
+              "returns 403 and must be fixed from the Drive UI."
+    sed -n 's/^DUPE=/  dup: /p' "$_af" | head -10
+  fi
+  if [ "$_an" != 0 ]; then
+    log_error "source '$1': $_an object(s) have no stored size AND are not"\
+              "skipped by the mount, so charon cannot account for them: an"\
+              "export-only object would have been omitted, and a real one"\
+              "would have a size. Read one with"\
+              "\`rclone cat --count 64\` before assuming anything."
+    sed -n 's/^NOCONTENT=/  unexplained: /p' "$_af" | head -10
+  fi
   return 1
 }
 
@@ -444,11 +482,39 @@ audit_subtrees() {   # <source>
 
 # Read an rclone lsjson array on stdin; emit DUPE=/NOCONTENT= lines. Kept as its
 # own function so a test can feed it canned JSON and never touch a remote.
-audit_report() {   # <subtree-prefix>
-  CHARON_AUDIT_PREFIX="$1" python3 -c '
+# `Size: -1` MEANS "NO STORED SIZE", NOT "NO CONTENT", and the first version of
+# this read it as the latter. Measured 2026-10-20, diagnosing a fleet-wide FAULT
+# that had run since 2026-10-16: the four objects it called contentless were
+# FULLY READABLE (rclone cat returned 26249, 182337 and 321276 bytes, each with
+# a PK zip header). They are native Google docs, which is exactly what -1 looks
+# like, because an export-only object has no stored byte size.
+#
+# AND A MimeType CANNOT TELL YOU THIS. All four report the real Office types
+# (spreadsheetml, wordprocessingml, presentationml), so the 2026-10-04 reasoning
+# "the MimeType was correct, therefore not a gdoc" was invalid.
+#
+# SO ASK THE QUESTION THAT MATTERS, AND MEASURE IT: does the MOUNT present the
+# object? `--drive-skip-gdocs` is the authority, because it is the flag the
+# mount itself runs with, so the audit now diffs a listing taken WITH it against
+# the full one. A path the mount omits can manufacture no conflict and reach no
+# cache; it is information, not a fault. The flag is harmless on a non-Drive
+# backend (verified: identical output, rc 0, no stderr), so this needs no
+# per-backend gating and a non-Drive remote simply reports nothing skipped.
+audit_report() {   # <subtree-prefix> [skip-gdocs-listing-json]
+  CHARON_AUDIT_PREFIX="$1" CHARON_AUDIT_SKIPFILE="${2:-}" python3 -c '
 import json, os, sys
 from collections import defaultdict
 pre = os.environ.get("CHARON_AUDIT_PREFIX", "")
+skipf = os.environ.get("CHARON_AUDIT_SKIPFILE", "")
+# The paths the mount WILL present. None means "not measured", and then every
+# -1 is reported as unexplained rather than waved through: an absent
+# measurement must not read as an all-clear.
+presented = None
+if skipf and os.path.exists(skipf):
+    try:
+        presented = set(f.get("Path", "") for f in json.load(open(skipf)))
+    except Exception:
+        presented = None
 try:
     rows = json.load(sys.stdin)
 except Exception:
@@ -461,7 +527,15 @@ for path, objs in sorted(by.items()):
     if len(objs) > 1:
         print("DUPE=%d %s" % (len(objs), full))
     for o in objs:
-        if o.get("Size", 0) == -1:
+        if o.get("Size", 0) != -1:
+            continue
+        if presented is not None and path not in presented:
+            # Export-only and omitted by the mount: a Google-native doc.
+            print("SKIPPED=%s" % full)
+        else:
+            # No stored size, yet the mount WILL present it. That is the
+            # 2026-10-04 shape when it rides alongside a real object, and
+            # otherwise something charon cannot account for. Say so either way.
             print("NOCONTENT=%s" % full)
 '
 }

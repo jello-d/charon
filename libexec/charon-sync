@@ -2623,19 +2623,52 @@ check_audit() {
     # COUNT the detail lines; the record carries no summary to disagree with.
     _cad=$(grep -c '^DUPE=' "$_caf" 2>/dev/null) || _cad=0
     _can=$(grep -c '^NOCONTENT=' "$_caf" 2>/dev/null) || _can=0
+    _cak=$(grep -c '^SKIPPED=' "$_caf" 2>/dev/null) || _cak=0
     _cat=$(sed -n 's/^AUDITED=//p' "$_caf" | head -1)
-    if [ "$_cad" = 0 ] && [ "$_can" = 0 ]; then
-      echo "  [OK]   source '$_cas': remote had no duplicate names when last"\
-           "audited $(human_age "${_cat:-0}" "$(date +%s)")"
+    # A PRE-SCHEMA RECORD CANNOT BE JUDGED, because it was written before the
+    # skip-gdocs measurement existed and so filed every Google doc under
+    # NOCONTENT. Re-deriving a verdict from it reproduces exactly the false
+    # FAULT this release fixes, for as long as the record is stale. Ask for a
+    # re-audit instead, which the daily sweep will do on its own.
+    if ! grep -q '^SCHEMA=' "$_caf" 2>/dev/null; then
+      echo "  [WARN] source '$_cas': the audit record predates the"\
+           "export-only measurement, so its findings cannot be judged"\
+           "(run '${APP_NAME%% *} audit'; the daily sweep does it too)"
       continue
     fi
-    fail_fault "source '$_cas': the remote had $_cad duplicated path(s) and"\
-         "$_can contentless object(s) when last audited"\
-         "($(human_age "${_cat:-0}" "$(date +%s)")). A duplicate name"\
-         "makes"\
-         "the mount non-deterministic and manufactures conflicts on EVERY"\
-         "node. charon cannot collapse it: run"\
-         "'rclone dedupe --dedupe-mode largest <remote>:<subtree>'."
+    # EXPORT-ONLY OBJECTS ARE NOT A FINDING. The mount omits them, so they
+    # reach no cache and conflict with nothing. Counted on the OK line because
+    # "N files on the remote will never appear locally" is worth knowing, and
+    # `${APP_NAME%% *} audit` names them.
+    if [ "$_cad" = 0 ] && [ "$_can" = 0 ]; then
+      # Built as a variable, not spliced into the echo: a line continuation
+      # INSIDE a ${x:+...} expansion carries the next line's indentation into
+      # the string, which printed "1m ago;           4 export-only".
+      _caex=
+      [ "$_cak" = 0 ] \
+        || _caex="; $_cak export-only object(s) the mount skips"
+      echo "  [OK]   source '$_cas': remote had no duplicate names when last"\
+           "audited $(human_age "${_cat:-0}" "$(date +%s)")$_caex"
+      continue
+    fi
+    # SEPARATE FINDINGS, SEPARATE LINES. One line used to carry both counts and
+    # then offer only the dedupe remedy, so a remote with 0 duplicates was told
+    # to collapse duplicates, under an explanation that did not apply to it.
+    if [ "$_cad" != 0 ]; then
+      fail_fault "source '$_cas': the remote had $_cad duplicated path(s) when"\
+           "last audited ($(human_age "${_cat:-0}" "$(date +%s)")). A"\
+           "duplicate name makes the mount non-deterministic and manufactures"\
+           "conflicts on EVERY node. charon cannot collapse it: run"\
+           "'rclone dedupe --dedupe-mode largest <remote>:<subtree>'."
+    fi
+    if [ "$_can" != 0 ]; then
+      fail_fault "source '$_cas': the remote had $_can object(s) with no"\
+           "stored size that the mount does NOT skip"\
+           "($(human_age "${_cat:-0}" "$(date +%s)")), which charon cannot"\
+           "account for: an export-only object would have been omitted and a"\
+           "real one would have a size. Run '${APP_NAME%% *} audit' for the"\
+           "paths, then read one with 'rclone cat --count 64'."
+    fi
     _carc=1
   done
   [ -n "$_caany" ] || return 0
