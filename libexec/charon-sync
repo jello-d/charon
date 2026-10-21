@@ -2608,6 +2608,33 @@ check_push_authorisation() {
   return 0
 }
 
+# THE WEDGE A DRIVE-SIDE CONVERSION LEAVES BEHIND, which is the damage the
+# export-only false fault was drowning out. Measured end to end 2026-10-20/21:
+#   1. someone opens an .xlsx in Sheets; Drive converts it to a native doc
+#   2. the mount runs --drive-skip-gdocs, so it STOPS presenting that object
+#   3. the CACHE still holds the pre-conversion copy, so unison sees a
+#      cache-only file and tries to CREATE it
+#   4. the write lands where the invisible gdoc already owns the name:
+#      `Failed [<dir>]: Destination updated during synchronization`
+#   5. it can never succeed, so it re-arms every pass. manifestor burned 87
+#      consecutive passes on one directory before anything named the cause.
+# UNWEDGE CANNOT HELP, and correctly says so: a directory creation leaves no
+# transfer temp to drop. So the only useful thing charon can do is NAME it, and
+# the audit record already holds everything needed to.
+#
+# ONE stat PER EXPORT-ONLY PATH, which is cheap because that set is tiny (4 on
+# this Drive) and the record is read rather than re-listed.
+audit_cache_leftovers() {   # <source> -> one cache path per line
+  _aclc=$(source_get "$1" CACHE_ROOT)
+  [ -n "$_aclc" ] || return 0
+  sed -n 's/^SKIPPED=//p' "$CHARON_STATE/audit/$1" 2>/dev/null \
+  | while IFS= read -r _aclp; do
+      [ -n "$_aclp" ] || continue
+      [ -f "$_aclc/$_aclp" ] && printf '%s\n' "$_aclc/$_aclp"
+    done
+  return 0
+}
+
 check_audit() {
   _carc=0; _caany=
   for _cas in $(source_names); do
@@ -2640,6 +2667,25 @@ check_audit() {
     # reach no cache and conflict with nothing. Counted on the OK line because
     # "N files on the remote will never appear locally" is worth knowing, and
     # `${APP_NAME%% *} audit` names them.
+    # AN EXPORT-ONLY PATH WITH A REAL FILE STILL IN THE CACHE IS A WEDGE, and
+    # it is the one finding here a human can act on and an apply cannot. It
+    # must be checked even when the audit itself is clean, because that is
+    # exactly the state this fleet was in: zero duplicates, four export-only
+    # objects, and two of them with a stale cache copy quietly failing every
+    # pass. Named with both remedies, because only the user can pick.
+    _calo=$(audit_cache_leftovers "$_cas")
+    if [ -n "$_calo" ]; then
+      _calon=$(printf '%s\n' "$_calo" | grep -c .)
+      fail_fault "source '$_cas': $_calon path(s) are EXPORT-ONLY on the"\
+           "remote while the cache still holds a real"\
+           "file. The mount cannot present them, so every pass tries to"\
+           "CREATE them and collides with the invisible Google doc, forever"\
+           "('Destination updated during synchronization'). Either drop the"\
+           "cache copy, or convert the file back to a real Office file in the"\
+           "Drive UI:"
+      printf '%s\n' "$_calo" | head -5 | sed 's/^/           stale cache: /'
+      _carc=1
+    fi
     if [ "$_cad" = 0 ] && [ "$_can" = 0 ]; then
       # Built as a variable, not spliced into the echo: a line continuation
       # INSIDE a ${x:+...} expansion carries the next line's indentation into
@@ -2647,8 +2693,9 @@ check_audit() {
       _caex=
       [ "$_cak" = 0 ] \
         || _caex="; $_cak export-only object(s) the mount skips"
-      echo "  [OK]   source '$_cas': remote had no duplicate names when last"\
-           "audited $(human_age "${_cat:-0}" "$(date +%s)")$_caex"
+      [ -n "$_calo" ] || echo "  [OK]   source '$_cas': remote had no"\
+           "duplicate names when last audited"\
+           "$(human_age "${_cat:-0}" "$(date +%s)")$_caex"
       continue
     fi
     # SEPARATE FINDINGS, SEPARATE LINES. One line used to carry both counts and

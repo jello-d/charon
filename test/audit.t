@@ -381,6 +381,47 @@ printf '%s\n' "$out" | grep -q '\[OK\].*2 export-only' \
   || fail "the OK line does not COUNT them. A file that will never appear in
     the cache is worth saying, even when it is not a fault ($out)"
 
+# AN EXPORT-ONLY PATH WITH A REAL FILE STILL IN THE CACHE IS A WEDGE, and this
+# is the rule that would have caught the live damage on 2026-10-16 instead of
+# the false fault. Measured end to end: the mount cannot present the object, so
+# every pass tries to CREATE the cache copy and collides with the invisible
+# Google doc. manifestor burned 87 consecutive passes on one directory.
+# UNWEDGE CANNOT HELP (a directory creation leaves no temp), so naming it is
+# the only useful thing charon can do.
+{ printf 'SCHEMA=2\nAUDITED=%s\nREMOTE=gd\n' "$(date +%s)"
+  printf 'SKIPPED=Docs/sheet.xlsx\n'; } > "$REC"
+mkdir -p "$T/cache/Docs"
+printf 'stale pre-conversion copy\n' > "$T/cache/Docs/sheet.xlsx"
+_c check >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] \
+  || fail "an export-only path with a STALE CACHE COPY gave verdict $rc, wanted
+    2. That state wedges the profile on every pass and no apply can clear it"
+out=$(_c check 2>&1)
+printf '%s\n' "$out" | grep -q '\[FAULT\].*EXPORT-ONLY' \
+  || fail "the wedge was not reported as a fault ($out)"
+printf '%s\n' "$out" | grep -q 'stale cache:.*Docs/sheet.xlsx' \
+  || fail "the fault does not NAME the stale cache file, which is the one thing
+    a human needs in order to act ($out)"
+printf '%s\n' "$out" | grep -qi 'Drive UI' \
+  || fail "the fault names only one of the two remedies; only the user can
+    choose between dropping the cache copy and converting the file back ($out)"
+# AND THE OK LINE MUST NOT PRINT ALONGSIDE IT. "remote had no duplicate names"
+# is true and, printed next to a FAULT about the same source, reads as two
+# verdicts for one thing. Found by mutation.
+printf '%s\n' "$out" | grep -q "\[OK\].*source 'gd': remote had no" \
+  && fail "an [OK] line for the same source printed alongside the [FAULT],
+    which reads as two verdicts for one source ($out)" || :
+
+# ...and with the cache copy GONE it is no finding at all, because an
+# export-only object the cache does not mirror simply never syncs.
+rm -f "$T/cache/Docs/sheet.xlsx"
+_c check >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] \
+  || fail "an export-only path with NO cache copy gave verdict $rc, wanted 0.
+    Nothing is wedged: the file just never reaches the cache"
+_c check 2>&1 | grep -q 'EXPORT-ONLY' \
+  && fail "the wedge fault fired with no stale cache copy present" || :
+
 # A PRE-SCHEMA RECORD CANNOT BE JUDGED. It was written before the export-only
 # measurement existed, so it filed every Google doc under NOCONTENT; deriving a
 # verdict from it reproduces the false FAULT for as long as it is stale.
