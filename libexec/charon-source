@@ -186,7 +186,26 @@ do_seed() {   # <source> <subtree> <dest>
       while IFS= read -r _dsx; do set -- "$@" "$_dsx"; done <<EOF
 $(never_content_excludes)
 EOF
-      "$RCLONE_BIN" copy "$_dss" "$_dsd" "$@" \
+      # AND IT MUST NOT COPY DOWN WHAT THE MOUNT WILL NOT PRESENT, which is the
+      # same lesson one class wider and was found the hard way on 2026-10-21.
+      # A bare `rclone copy` EXPORTS every Google-native doc into the cache as
+      # a real .xlsx/.docx/.pptx. The mount runs --drive-skip-gdocs and so never
+      # presents that object, so the seed manufactures a cache-only file at a
+      # path the mount cannot show, and unison then tries to CREATE it on the
+      # remote forever, colliding with the invisible gdoc. manifestor burned 87
+      # consecutive passes on exactly that.
+      #
+      # THE SEED IS AN OPTIMISATION FOR WHAT THE MOUNT WOULD SYNC, so anything
+      # it copies that the mount will not present is divergence BY DEFINITION.
+      # Proved by the byte counts: four cache files deleted by hand came back
+      # from the next seed at slightly DIFFERENT sizes (182467 against 182352,
+      # 1678665 against 1678668), because they were freshly EXPORTED rather
+      # than restored.
+      #
+      # Passed unconditionally: verified harmless on a non-Drive backend
+      # (identical output, rc 0, no stderr), so this needs no backend gating and
+      # mirrors how the audit asks the same question.
+      "$RCLONE_BIN" copy "$_dss" "$_dsd" "$@" --drive-skip-gdocs \
         --transfers 4 --checkers 8 --fast-list \
         --contimeout 15s --timeout 60s --retries 3 --low-level-retries 20 ;;
     *)

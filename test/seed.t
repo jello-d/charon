@@ -109,6 +109,22 @@ for _x in $_seedx; do
       so the shared list is not actually what reaches rclone: $_c"
 done
 
+# THE SEED MUST NOT COPY DOWN WHAT THE MOUNT WILL NOT PRESENT, which is the
+# litter lesson above one class wider and cost 87 consecutive failing passes
+# before anything named it. A bare `rclone copy` EXPORTS every Google-native
+# doc into the cache as a real .xlsx/.docx/.pptx. The mount runs
+# --drive-skip-gdocs and never presents that object, so the seed manufactures a
+# cache-only file at a path the mount cannot show, and unison then tries to
+# CREATE it on the remote forever, colliding with the invisible gdoc. Measured
+# 2026-10-21: the remote accumulated three objects at one path that way, each
+# seed exporting a slightly different byte count.
+# THE SEED IS AN OPTIMISATION FOR WHAT THE MOUNT WOULD SYNC, so anything it
+# copies that the mount will not present is divergence by definition.
+printf '%s\n' "$_c" | grep -qF -- '--drive-skip-gdocs' \
+  || fail "the seed did not pass --drive-skip-gdocs, so it exports Google docs
+    into the cache as real Office files that the mount will never present, and
+    every later pass tries to push them back: $_c"
+
 # AND THE DIRECTION SURVIVES THE EXCLUDES. Building an argv list with `set --`
 # replaces the FUNCTION's own positional parameters, so an earlier version read
 # $2/$3 AFTER building the list and asked rclone to copy from `gd:--exclude`.
