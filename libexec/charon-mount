@@ -460,6 +460,42 @@ do_install() {
   # that turned every routine regeneration into a sudo handoff.
   ensure_rclone
 
+  # INSTALL AND CHECK MUST NOT DISAGREE ABOUT WHICH SOURCES EXIST, and they did
+  # (measured 2026-10-25, on the path a headless operator would try FIRST).
+  # With CHARON_REMOTE set and NO sources.d file, `charon mount install`
+  # resolved `default` directly and happily reported
+  #   charon-mount@default.service enabled and started for gd: at ~/gd
+  # while `charon mount check` on the same box printed BOTH
+  #   [OK]   no rclone-backed source; charon mounts nothing here
+  #   [FAIL] charon-mount@default.service is enabled but 'default' is not an
+  #          rclone-backed source; it can never mount
+  # A flat contradiction, and the box looked installed.
+  #
+  # THE CAUSE IS THAT THE IMPLICIT `default` IS RESOLVABLE BUT NOT ENUMERABLE:
+  # source_get answers for it, while source_names lists only sources with a
+  # FILE plus those a profile references. install took the first route and
+  # check takes the second.
+  #
+  # AND IT CANNOT BE FIXED BY ENUMERATING `default`, which is the obvious move
+  # and is unsafe: CHARON_REMOTE defaults to `gdrive`, so on a box that already
+  # DECLARES a gdrive source the implicit default derives the identical
+  # mountpoint, and every such box would grow a phantom second source
+  # describing one tree. That is the duplication the source split exists to
+  # prevent. So install defers to the enumeration instead, and declining to
+  # schedule a unit beats scheduling one that can never work.
+  if ! "$CHARON_LIBEXEC/charon-source" list 2>/dev/null \
+       | grep -qxF "$CHARON_SOURCE"; then
+    log_error "source '$CHARON_SOURCE' is not a declared source, so nothing"\
+              "would ever mount it and 'charon mount check' would report the"\
+              "enabled unit as an orphan. Declare it in three lines:"
+    log_error "  $CHARON_SOURCES_DIR/$CHARON_SOURCE.conf"
+    log_error "    PROVIDER=rclone"
+    log_error "    REMOTE=${REMOTE_NAME:-<rclone remote name>}"
+    log_error "    MOUNT=${MOUNTPOINT:-<mountpoint>}"
+    log_error "A mount-only host needs no CACHE_ROOT and no profiles."
+    exit 2
+  fi
+
   mkdir -p "$_sd"
   render_unit "$CHARON_REMOTE" >"$TEMPLATE_FILE"
   log_info "installed systemd template: $TEMPLATE_FILE"

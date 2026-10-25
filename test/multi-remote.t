@@ -225,4 +225,59 @@ done
 [ -d "$T/one" ] && [ -d "$T/two" ] \
   || fail "uninstall removed a mountpoint; it must touch only units"
 
+#### INSTALL AND CHECK MUST NOT DISAGREE ABOUT WHICH SOURCES EXIST ####
+# `charon mount install` is the MOUNT-ONLY surface a headless host uses: it
+# writes one unit and no sync or sweep machinery. On the path such an operator
+# would try FIRST, with CHARON_REMOTE set and no sources.d file, it used to
+# resolve the implicit `default` directly and report
+#   charon-mount@default.service enabled and started for gd: at ~/gd
+# while check on the SAME box printed both
+#   [OK]   no rclone-backed source; charon mounts nothing here
+#   [FAIL] charon-mount@default.service is enabled but 'default' is not an
+#          rclone-backed source; it can never mount
+# A flat contradiction, and the box looked installed.
+#
+# THE CAUSE: the implicit default is RESOLVABLE but not ENUMERABLE. source_get
+# answers for it; source_names lists only sources with a FILE plus those a
+# profile references. install took the first route, check takes the second.
+#
+# IT CANNOT BE FIXED BY ENUMERATING `default`, which is why install defers
+# instead: CHARON_REMOTE defaults to `gdrive`, so on a box that already
+# DECLARES a gdrive source the implicit default derives the IDENTICAL
+# mountpoint, and every such box would grow a phantom second source describing
+# one tree. That is the duplication the source split exists to prevent.
+_undeclared=$T/xdg2
+mkdir -p "$_undeclared" "$T/nocfg"
+_mi() { PATH="$T/bin:/usr/bin:/bin" CHARON_CONFIG=$T/nocfg \
+    CHARON_TRAITS_DIR=$T/st UNISON_DIR=$T/uni \
+    XDG_CONFIG_HOME=$_undeclared CHARON_REMOTE=one \
+    sh "$HERE/bin/charon" mount install 2>&1; }
+out=$(_mi); rc=$?
+[ "$rc" = 0 ] \
+  && fail "mount install SUCCEEDED for an undeclared source. It enables a unit
+that check then calls an orphan which can never mount, so the host looks
+installed and never works ($out)"
+printf '%s\n' "$out" | grep -q 'not a declared source' \
+  || fail "the refusal does not say WHY ($out)"
+# PRESCRIBE THE REMEDY, not just the gap: a headless operator needs the exact
+# file, and the values are already resolved by the time it refuses.
+printf '%s\n' "$out" | grep -q 'PROVIDER=rclone' \
+  || fail "the refusal does not give the three lines to write ($out)"
+printf '%s\n' "$out" | grep -q 'REMOTE=one' \
+  || fail "the refusal does not fill in the REMOTE it had already resolved
+($out)"
+printf '%s\n' "$out" | grep -qi 'no CACHE_ROOT and no profiles' \
+  || fail "the refusal does not say a mount-only host needs neither, which is
+the whole point of the surface ($out)"
+# AND IT MUST SCHEDULE NOTHING. Declining to write a unit beats writing one
+# that can never work; an enabled-but-dead instance is worse than a refusal.
+_w=$_undeclared/systemd/user/default.target.wants
+[ -e "$_w/charon-mount@default.service" ] \
+  && fail "it refused and STILL enabled the instance" || :
+
+# ...and a DECLARED source is unaffected, which is what every host in this
+# fleet actually uses.
+_c install >/dev/null 2>&1 || fail "install broke for declared sources"
+_c check >/dev/null 2>&1 || fail "check broke for declared sources"
+
 pass "two rclone sources: one unit each, per-profile ordering, clean teardown"
