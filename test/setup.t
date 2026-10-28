@@ -130,7 +130,15 @@ grep -q '\[OK\].*payload is a self-contained tree' "$T/c.out" \
 # Each case below is a MUTATION of the installed state, and each must be named
 # in the output: an assertion on the process-wide exit code cannot tell you
 # which of ten things failed, and a dozen causes can set it.
+#
+# THE PASS LINE COUNTS THESE rather than stating a figure by hand, which it did
+# until a case was added and the hardcoded 11 silently became wrong. A tally
+# nobody recomputes is the same asserted-vs-actual drift the product code is
+# audited for, and the number is the only part of a green line that can be
+# caught lying.
+_nbrk=0
 _broken() {   # <what was broken> <pattern check must print>
+  _nbrk=$((_nbrk + 1))
   _chk && fail "check PASSED with $1"
   grep -qi "$2" "$T/c.out" \
     || fail "check did not name the problem for $1; it printed:
@@ -219,6 +227,60 @@ ln -sfn "$HERE/share/charon/example.conf" \
         "$XDG_DATA_HOME/applications/charon-leftover"
 _broken "a stray link into the source in an unexpected place" 'resolve into'
 rm -f "$XDG_DATA_HOME/applications/charon-leftover"
+
+# AND A STRAY WHOSE TARGET'S PARENT IS GONE, which is the case that decides HOW
+# the walk may resolve. The audit resolves the whole walk in ONE batched
+# `readlink -m` and pairs answers to inputs BY POSITION, which is sound only
+# because -m prints exactly one line per operand. `-f` does not: given MULTIPLE
+# operands it STOPS at the first path whose parent is missing and prints nothing
+# for it OR FOR ANY OPERAND AFTER IT (measured, 4 in and 2 out), so one orphan
+# under -f hides itself AND shifts every later pairing. This is that link.
+#
+# ASSERT THE NAME, not merely the wording. Under -f the counts disagree and the
+# audit refuses to answer, which is ALSO a non-zero check printing text about
+# resolving, so a looser assertion would pass on the very mutation it is here
+# to catch. Same shape as the common_lib case above, where two of charon's own
+# findings could answer for each other.
+mkdir -p "$XDG_DATA_HOME/applications"
+ln -sfn "$HERE/share/charon/absent-dir/leaf" \
+        "$XDG_DATA_HOME/applications/charon-orphan"
+_broken "a stray whose target's parent is gone" 'resolve into'
+grep -q 'charon-orphan' "$T/c.out" \
+  || fail "the stray walk did not NAME the orphaned link, so it resolved with
+  something that drops a path whose parent is missing: $(cat "$T/c.out")"
+rm -f "$XDG_DATA_HOME/applications/charon-orphan"
+_chk || fail "check is not green after removing the orphaned stray:
+  $(cat "$T/c.out")"
+
+# THE PAIRING IS ASSERTED, so prove the assertion FIRES. A batched resolve
+# answering N-1 times for N links would report one link's name against
+# another's target: a silent WRONG answer, which is strictly worse than a slow
+# one, and the only thing standing between the two is that count comparison.
+#
+# The stub misbehaves ONLY for the batch shape (-m with several operands),
+# because check also resolves the bin and man links ONE at a time: a blanket
+# stub would break those instead and prove nothing about this.
+REAL_READLINK=$(command -v readlink); export REAL_READLINK
+[ -n "$REAL_READLINK" ] || fail "no readlink on PATH to build the stub from"
+mkdir -p "$T/stub"
+cat >"$T/stub/readlink" <<'EOS'
+#!/bin/sh
+if [ "$1" = -m ] && [ $# -ge 3 ]; then
+  shift; "$REAL_READLINK" -m "$@" | head -n -1
+else
+  exec "$REAL_READLINK" "$@"
+fi
+EOS
+chmod +x "$T/stub/readlink"
+_chk "$T/stub:$XDG_BIN_HOME:$PATH" \
+  && fail "check passed while the resolve answered fewer times than it asked,
+  so it was pairing link names against other links' targets"
+grep -q 'NOT reporting a verdict' "$T/c.out" \
+  || fail "check did not refuse to answer over a broken pairing; it printed:
+  $(cat "$T/c.out")"
+rm -rf "$T/stub"
+_chk || fail "check is not green once the readlink stub is gone:
+  $(cat "$T/c.out")"
 
 # THE RETIRED ROOT: a WARN rather than a FAIL (it is stale, not broken), and
 # the next install must remove it. Driven BOTH ways, because a retire nothing
@@ -384,4 +446,5 @@ _left=$(find "$PREFIX" -type l 2>/dev/null | while IFS= read -r _l; do
   || fail "something installed into the fake HOME's own .local, so a real run
   would have written outside the prefix it was given"
 
-pass "the payload survives its source deleted; roundtrip + 11 breakages"
+pass "the payload survives its source deleted; roundtrip + $_nbrk named\
+ breakages"

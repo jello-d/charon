@@ -302,22 +302,59 @@ check_payload() {
       bad "man/$_rel does not link to $_pay/man/$_rel (got '$_cpg')"
     fi; done
   # NOTHING under the installed prefix may resolve back into this source tree.
-  # One walk of all three roots, measured at 0.05s over a real ~/.local, which
-  # is why it is affordable to ask the BROAD question rather than only
-  # re-checking the paths this script just wrote: the point of the question is
-  # the artifact nobody remembered.
-  _stray=$(find "$PREFIX" "$_bin" "$_shr" -type l 2>/dev/null | sort -u \
-    | while IFS= read -r _l; do
-        case "$(readlink -m -- "$_l" 2>/dev/null)" in
-          "$_root"|"$_root"/*) printf '%s\n' "$_l" ;;
-        esac; done)
-  if [ -n "$_stray" ]; then
-    bad "$(printf '%s\n' "$_stray" | wc -l | tr -d ' ') link(s) resolve into\
- $_root, so the next re-clone or cache wipe breaks them:"
-    printf '%s\n' "$_stray" | sed 's/^/           /'
+  # Ask the BROAD question rather than re-checking only the paths this script
+  # just wrote: the whole point of it is the artifact nobody remembered.
+  #
+  # ONE readlink FOR THE WHOLE WALK, never one per link. A fork per symlink
+  # read as free while ~/.local held a few dozen of them; a container store
+  # landed 14k links under it and this same code took 40 SECONDS, two thirds
+  # of that SYSTEM time, so it presented as a long wait with no busy process
+  # to point at. Nothing in charon changed, the neighbourhood did, which is
+  # why the fix is to batch rather than to prune that neighbour by name: the
+  # next one along is a nix store or a node_modules.
+  #
+  # THREE THINGS THE OBVIOUS SPELLING GETS WRONG, each measured:
+  # - `readlink -m`, NEVER `-f`. Given MULTIPLE operands, -f STOPS at the
+  #   first path whose PARENT is gone and prints nothing for it or for any
+  #   operand after it (4 in, 2 out), so one orphaned link silences the rest
+  #   of the batch. -m always prints exactly one line per operand, and that is
+  #   the property pairing by position stands on.
+  # - the walk must survive a PARTIAL read. ~/.local is shared with trees
+  #   charon will never own and some of them refuse traversal, so find exits
+  #   non-zero here every time; under `set -eu` that aborts the capture and
+  #   the answer comes back EMPTY, which reads as "no strays".
+  # - the pairing is ASSERTED, not assumed. Counts that disagree would report
+  #   one link's name against another's target, so refuse to answer at all
+  #   rather than answer wrongly.
+  _sl0=${TMPDIR:-/tmp}/$PKG-stray-l0.$$
+  _sln=${TMPDIR:-/tmp}/$PKG-stray-ln.$$
+  _slt=${TMPDIR:-/tmp}/$PKG-stray-tg.$$
+  find "$PREFIX" "$_bin" "$_shr" -type l -print0 2>/dev/null \
+    | sort -zu >"$_sl0" || :
+  tr '\0' '\n' <"$_sl0" >"$_sln"
+  xargs -0r readlink -m <"$_sl0" >"$_slt" || :
+  _sln_n=$(wc -l <"$_sln"); _slt_n=$(wc -l <"$_slt")
+  if [ "$_sln_n" != "$_slt_n" ]; then
+    bad "stray-link audit paired $_sln_n link(s) with $_slt_n resolved\
+ target(s), so it is NOT reporting a verdict on $PREFIX"
   else
-    ok "no link under $PREFIX resolves into this source tree"
+    # No pipe into this loop: a `while` on the right of one runs in a SUBSHELL,
+    # and `bad` below raises RC. A command substitution is fine, because only
+    # its stdout is wanted and every `bad` call sits outside it.
+    _stray=$(while IFS= read -r _l <&3 && IFS= read -r _rt <&4; do
+               case "$_rt" in
+                 "$_root"|"$_root"/*) printf '%s\n' "$_l" ;;
+               esac; done 3<"$_sln" 4<"$_slt")
+    if [ -n "$_stray" ]; then
+      bad "$(printf '%s\n' "$_stray" | wc -l | tr -d ' ') link(s) resolve into\
+ $_root, so the next re-clone or cache wipe breaks them:"
+      printf '%s\n' "$_stray" | sed 's/^/           /'
+    else
+      ok "no link under $PREFIX resolves into this source tree ($_sln_n\
+ scanned)"
+    fi
   fi
+  rm -f "$_sl0" "$_sln" "$_slt"
   if [ -e "$_oldlib" ] || [ -L "$_oldlib" ]; then
     warn "retired layout path survives: $_oldlib (reinstall removes it)"
   else
