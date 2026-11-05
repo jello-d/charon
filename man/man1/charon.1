@@ -177,6 +177,18 @@ count towards the streak, so a genuinely resuming large transfer never reaches
 the threshold. It acts once per
 fault and never touches the Unison archive, whose rebuild would cost far more
 than a re-transfer.
+.IP
+Whichever it does, it NAMES THE CAUSE. A streak means the fault is not
+healing, which is not the same as a stale temp being why, and dropping a temp
+only clears one of the six wedges charon can tell apart: a forgotten archive
+entry for a file or a directory, a path Unison could not read, an export-only
+Google doc the mount cannot present, more than one remote object at one path,
+or a stale temp. The class and the command that clears it appear in the
+warning and in the fault message, so
+.B charon plan
+is the first thing to run and
+.I ~/.unison/unison.log
+is named only when charon cannot attribute the failure to any path at all.
 .TP
 .B CRUMB_AGE_MIN=1440
 how old, in minutes, an orphaned temp must be before the sweep will remove it.

@@ -409,6 +409,18 @@ parse_unison_failures() {   # <captured-output-file>
   } | sort -u
 }
 
+# Form 2 ONLY: the paths unison could not READ, as opposed to could not
+# propagate. The merged list above is the right contract for everything that
+# treats a failing path as a failing path, and it THREW THIS AWAY: the two
+# wordings mean different failure PHASES with different remedies (a scan error
+# has no temp and no amount of retrying helps), and the distinction was being
+# computed and discarded on every pass. Kept as a second reader rather than by
+# changing the merged one, so no existing caller moves.
+parse_unison_scan_failures() {   # <captured-output-file>
+  [ -f "$1" ] || return 0
+  sed -n 's/^ *error  *\(.*[^ ]\) *$/\1/p' "$1" | sort -u
+}
+
 # Did unison reach its OWN verdict, so that its failure list is COMPLETE?
 #
 # THE LOAD-BEARING GUARD. Unison documents four statuses: 0 up to date, 1 some
@@ -554,12 +566,29 @@ record_failures() {   # <profile> <unison-rc> <captured-output>
     done <"$_rfp"
     printf 'FAILED=%s %s %s\n' "$_rfk" "$_rfs" "$_rfpath"
   done >"$_rfo"
+  # WHICH WORDING each path came from, recorded because the capture is DELETED
+  # before anything classifies the wedge, and because check and status read the
+  # record rather than a pass. A path listed here could not be READ; one absent
+  # from it could not be PROPAGATED. Its own key, so a record from an older
+  # version simply has none and the classifier says `unknown` rather than
+  # guessing: readers select by key, so nothing existing moves.
   { printf 'LAST=%s\n' "$_rfnow"
     printf 'RC=%s\n' "$2"
     cat "$_rfo"
+    parse_unison_scan_failures "$3" | while IFS= read -r _rfsp; do
+      [ -n "$_rfsp" ] || continue
+      printf 'SCANFAIL=%s\n' "$_rfsp"
+    done
   } >"$_rff" 2>/dev/null || log_warn "could not record failed paths for '$1'"
   rm -f "$_rfp" "$_rfo"
   return 0
+}
+
+# The paths from this record that could not be READ. Absent key, empty answer.
+scan_failed_paths() {   # <profile>
+  _sfpf=$(failed_file "$1")
+  [ -f "$_sfpf" ] || return 0
+  sed -n 's/^SCANFAIL=//p' "$_sfpf"
 }
 
 # One line naming the count and the oldest evidence, or nothing. Shared by the
@@ -1633,6 +1662,224 @@ sweep_path_crumbs() {   # <mount-root> <cache-root> <relative-path> [reason]
 # killed. That is a cure worse than the disease. Dropping a temp costs at most
 # one re-transfer of one file, and a temp is never content.
 #
+# --- WHY a path is wedged, and what a human should do about it ---------------
+#
+# THE TRIGGER IS NOT THE DIAGNOSIS, and conflating them is what made the
+# unwedge useless on 2026-11-05. A streak says "this fault is not healing"; it
+# does NOT say "a stale temp is why". The unwedge carried one hypothesis with
+# no way to be wrong, so on a wedge whose cause was a FORGOTTEN ARCHIVE ENTRY
+# it dropped two temps (which every later pass re-stranded), announced that it
+# had acted, and the streak ran from 3 to 8 while the fault message pointed the
+# reader at ~/.unison/unison.log, where the cause is not.
+#
+# So the cause is NAMED now, per path, as DATA. Same move this project already
+# made twice: `check` classifies every finding as drift or fault because only a
+# classified finding can be acted on, and `profile_outcome` returns the state as
+# a token so check and status cannot describe one pass two ways.
+#
+# FIVE OF THE SIX CLASSES NEED NO NEW MEASUREMENT. The facts were already here
+# and were being thrown away, which is the 2026-09-24 shape exactly (charon had
+# unison's output all along and collected none of it): path_crumbs already
+# answers the temp question, the audit record already holds the duplicate and
+# export-only verdicts per path, and parse_unison_failures already tells the two
+# unison wordings apart and then MERGES them.
+wedge_class() {   # <temp|notemp> <scan|propagate|unknown> <content> <remote>
+  # PURE: every fact arrives as a WORD and nothing here stats a path, so all
+  # seven answers are reachable from a one-line call and the test needs no
+  # fixture on disk. That is the `d_tree` lesson from the shared conventions
+  # check, which is the only reason its five answers are provable at all.
+  #
+  # THE ORDER IS THE DESIGN, not an accident of writing:
+  case "$2" in
+    # A scan or digest failure happened BEFORE any transfer, so neither a temp
+    # nor the remote's shape is relevant to it.
+    scan) printf 'SCAN_ERROR\n'; return 0 ;;
+  esac
+  case "$4" in
+    # Duplicate objects make the mount non-deterministic, which GENERATES the
+    # apparent divergence underneath everything else. Dedupe has to come first
+    # or any other remedy is applied to a moving target.
+    dupe) printf 'DUPE_OBJECTS\n'; return 0 ;;
+    # The documented Drive-side conversion wedge: the mount cannot present the
+    # path at all, so no local remedy can make the create succeed.
+    exportonly) printf 'EXPORT_ONLY\n'; return 0 ;;
+  esac
+  case "$3" in
+    dir) printf 'FORGOTTEN_DIR\n'; return 0 ;;
+    # BEFORE the temp class, and this inversion IS the fix. On 2026-11-05 both
+    # were true at once: identical content on both replicas AND a temp beside
+    # it. The archive gap is the cause and the temp is a symptom of the retry it
+    # provokes, so ranking the temp first is what produced a confident wrong
+    # answer for eight passes.
+    identical) printf 'FORGOTTEN_ARCHIVE\n'; return 0 ;;
+  esac
+  case "$1" in temp) printf 'STALE_TEMP\n'; return 0 ;; esac
+  # THE HONEST FLOOR. Saying "I do not know which of six this is" beats naming
+  # the most likely one, because a prescription is only worth following if a
+  # wrong one is rare.
+  printf 'UNKNOWN\n'
+}
+
+# The remedy for a class, as one sentence a human can act on.
+#
+# IT PRESCRIBES RATHER THAN NAMING THE GAP, which the shared notes make a rule
+# for cross-repo findings and which applies just as well to a human at a box:
+# naming a gap without saying how to close it invites two reasonable people to
+# close it two different ways. Where charon can act, it says what charon does;
+# where it cannot, it gives the exact command.
+wedge_remedy() {   # <class> <profile> <path>
+  case "$1" in
+    STALE_TEMP)
+      printf 'a stranded transfer temp is defeating the retry, which is the'
+      printf ' one wedge charon can clear by itself; it drops the temp so the'
+      printf ' next pass starts clean.' ;;
+    FORGOTTEN_ARCHIVE)
+      printf 'both replicas already hold this path with the same size and'
+      printf ' mtime, so there is nothing legitimate left to propagate and'
+      printf " unison's archive has lost its entry: the create it retries can"
+      printf ' never succeed. CONFIRM with "%s plan %s" (a "new file" row for' \
+        "${APP_NAME%% *}" "$2"
+      printf ' a path that exists on both sides), then commit the entry with a'
+      printf ' scoped rescan, timers stopped: UNISON=$HOME/.unison unison'
+      printf ' charon-%s -auto -batch -ui text -path %s' "$2" "'$3'" ;;
+    FORGOTTEN_DIR)
+      printf 'this path is a DIRECTORY and its archive entry is missing, so'
+      printf ' unison keeps trying to create a directory that is already'
+      printf ' there. CONFIRM with "%s plan %s" first, because the remedy' \
+        "${APP_NAME%% *}" "$2"
+      printf ' depends on the cache copy: if it is EMPTY, rmdir it and the next'
+      printf ' pass does a plain local mkdir; if it is POPULATED, use a scoped'
+      printf ' rescan (-path) to commit the entry.' ;;
+    SCAN_ERROR)
+      printf 'unison could not READ this path (a scan or digest failure, not a'
+      printf ' transfer one), so there is no temp to drop and no amount of'
+      printf ' retrying will help. Check its permissions, and whether it is a'
+      printf ' fifo, a socket or a broken symlink rather than a file.' ;;
+    EXPORT_ONLY)
+      printf 'the remote object here is EXPORT-ONLY (a native Google doc) so'
+      printf ' the mount cannot present it, while the cache still holds a real'
+      printf ' file: every pass collides with the invisible doc. Either drop'
+      printf ' the cache copy, or convert the file back to a real Office file'
+      printf ' in the Drive UI.' ;;
+    DUPE_OBJECTS)
+      printf 'the remote holds MORE THAN ONE object at this path, so the mount'
+      printf ' presents whichever it likes and unison correctly reads that as'
+      printf ' both replicas diverging. Collapse them first:'
+      printf ' rclone dedupe --dedupe-mode largest <remote>:<subtree>.' ;;
+    *)
+      printf 'charon cannot tell which wedge this is. Start with'
+      printf ' "%s plan %s", which prints what unison wants to do' \
+        "${APP_NAME%% *}" "$2"
+      printf ' without writing anything.' ;;
+  esac
+}
+
+# Gather the four facts for one path. The IMPURE half, kept separate from the
+# classifier above so the dispatch is testable without a filesystem.
+#
+# OFF THE HOT PATH BY CONSTRUCTION: this runs for a wedged path (so, rarely) and
+# for the one path the fault message names, never for every path of every pass.
+# The content test is a stat pair rather than a `cmp`, deliberately: it is
+# exactly the size-and-mtime comparison unison's own `fastcheck` uses to decide
+# a file is unchanged, so it answers the same question unison asked, it cannot
+# read an unbounded amount through FUSE, and the prescription it feeds says
+# plainly that `plan` is the confirmation. The project rule that size is not
+# identity governs DELETING something; this only chooses a sentence.
+wedge_facts() {   # <profile> <path> -> "<temp> <wording> <content> <remote>"
+  _wft=notemp; _wfw=propagate; _wfc=unknown; _wfr=unknown
+  if scan_failed_paths "$1" | grep -qxF -- "$2"; then _wfw=scan; fi
+  _wfrr=$(resolve_profile_roots "$1" 2>/dev/null) || _wfrr=
+  if [ -n "$_wfrr" ]; then
+    _wfm=${_wfrr%%|*}; _wfrest=${_wfrr#*|}; _wfch=${_wfrest%%|*}
+    if [ -n "$(path_crumbs "$_wfm" "$2"; path_crumbs "$_wfch" "$2")" ]; then
+      _wft=temp
+    fi
+    if [ -d "$_wfm/$2" ] || [ -d "$_wfch/$2" ]; then
+      _wfc=dir
+    elif [ -f "$_wfm/$2" ] && [ -f "$_wfch/$2" ]; then
+      _wfa=$(stat -c '%s %Y' -- "$_wfm/$2" 2>/dev/null) || _wfa=
+      _wfb=$(stat -c '%s %Y' -- "$_wfch/$2" 2>/dev/null) || _wfb=
+      if [ -z "$_wfa" ] || [ -z "$_wfb" ]; then _wfc=unknown
+      elif [ "$_wfa" = "$_wfb" ]; then _wfc=identical
+      else _wfc=differ; fi
+    else
+      _wfc=differ
+    fi
+  fi
+  _wfr=$(audit_path_class "$1" "$2")
+  printf '%s %s %s %s\n' "$_wft" "$_wfw" "$_wfc" "$_wfr"
+}
+
+# What the last remote audit said about one path: dupe, exportonly, plain, or
+# unknown when there is no record to ask.
+#
+# THE SUBTREE HAS TO BE JOINED BACK ON, and this is the trap the notes already
+# charge for once: unison's paths are relative to the PROFILE's roots, which
+# already include the subtree, while the audit records paths relative to the
+# SOURCE. Comparing them raw silently matches nothing, which reads as "the
+# remote is fine" rather than as a bug.
+audit_path_class() {   # <profile> <path>
+  _apcs=$(profile_source_name "$1" 2>/dev/null) || _apcs=
+  [ -n "$_apcs" ] || { printf 'unknown\n'; return 0; }
+  _apcf="$CHARON_STATE/audit/$_apcs"
+  [ -f "$_apcf" ] || { printf 'unknown\n'; return 0; }
+  # A pre-schema record filed every Google doc under NOCONTENT, so its words
+  # cannot be trusted; check_audit refuses to judge one and so does this.
+  grep -q '^SCHEMA=' "$_apcf" 2>/dev/null \
+    || { printf 'unknown\n'; return 0; }
+  _apcsub=$(profile_subtree "$1" 2>/dev/null) || _apcsub=
+  _apcp="${_apcsub:+$_apcsub/}$2"
+  if sed -n 's/^DUPE=//p' "$_apcf" | grep -qxF -- "$_apcp"; then
+    printf 'dupe\n'
+  elif sed -n 's/^SKIPPED=//p' "$_apcf" | grep -qxF -- "$_apcp"; then
+    printf 'exportonly\n'
+  else
+    printf 'plain\n'
+  fi
+}
+
+# One line: the class and its remedy, for a path. Shared by the unwedge warning
+# and the fault message so the two cannot name one wedge two ways, which is the
+# same reason profile_outcome exists.
+wedge_verdict() {   # <profile> <path>
+  _wvf=$(wedge_facts "$1" "$2")
+  # shellcheck disable=SC2086  # the four facts are single words BY CONTRACT
+  _wvc=$(wedge_class $_wvf)
+  printf '%s: %s' "$_wvc" "$(wedge_remedy "$_wvc" "$1" "$2")"
+}
+
+# What the journal says and the notify flag carries, for one faulting pass.
+#
+# A NAMED FUNCTION so the test exercises THIS text rather than a copy of it.
+# Reaching a real fault through run_sync_profile needs the gate, the lock and a
+# live source to cooperate first, so the assembly was effectively untestable
+# while it sat inline, and "the wiring is two lines" is how an untested two
+# lines gets shipped. The project rule is to extract the real function and call
+# it, which is why worse_of exists.
+fault_message() {   # <profile> <unison-profile> <rc>
+  _fmm="Unison $2 failed (exit $3)."
+  # NAME THE PATHS IN THE FLAG ITSELF. The flag is often the only thing a human
+  # ever reads about a fault, and "exit 2, go read the log" made them go and
+  # read the log, which on 2026-09-24 meant grepping the journal by hand for
+  # six paths unison had already printed plainly.
+  _fms=$(failed_summary "$1")
+  _fmp=$(failed_paths "$1" | head -1)
+  [ -z "$_fms" ] || _fmm="$_fmm $_fms, e.g. $_fmp."
+  # SAY WHAT THE WEDGE IS, not merely where the log lives. "Run it
+  # interactively and check ~/.unison/unison.log" was true and, on 2026-11-05,
+  # sent the reader to the wrong place: the cause was a missing archive entry,
+  # which the log does not show and `charon plan` names in one line. Falls back
+  # to the old sentence when there is no path to classify, because with nothing
+  # attributable the log genuinely is the next place to look.
+  _fmv=
+  [ -z "$_fmp" ] || _fmv=$(wedge_verdict "$1" "$_fmp" 2>/dev/null) || :
+  if [ -n "$_fmv" ]; then
+    printf '%s %s' "$_fmm" "$_fmv"
+  else
+    printf '%s Run it interactively and check ~/.unison/unison.log.' "$_fmm"
+  fi
+}
+
 # ONCE PER FAULT, at the moment the streak CROSSES the threshold. Acting on
 # every later pass would be a no-op (the temps are gone) that logged a warning
 # every time, and a warning that fires every time is one nobody reads.
@@ -1676,17 +1923,31 @@ unwedge_profile() {   # <profile>
   _uwk=$(wc -l <"$_uwf" | tr -d ' ')
   rm -f "$_uwf"
 
+  # NAME THE CAUSE, for the FIRST wedged path, whichever branch follows. One
+  # path and not all of them because this is a warning a human reads, the
+  # remedies are a sentence each, and `wedged_paths` is usually one path anyway;
+  # a wide fault would otherwise flood the journal with near-identical prose.
+  _uwv=$(wedge_verdict "$1" "$(printf '%s\n' "$2" | head -1)" 2>/dev/null) \
+    || _uwv=
   if [ "$_uwk" -eq 0 ]; then
     log_warn "profile '$1' has $_uwn path(s) failing $_uwa passes running and"\
              "charon has NOTHING it can do: there are no transfer temps to"\
              "drop, so this is not a stale-temp wedge and it needs a human."\
-             "Paths: $_uwl"
+             "Paths: $_uwl${_uwv:+ -> $_uwv}"
     return 0
   fi
+  # THE DROP IS UNCHANGED, DELIBERATELY, even when the class says a temp is not
+  # the cause. This increment only teaches charon to SAY what the wedge is; it
+  # does not let that verdict gate an action yet, because a classifier whose
+  # accuracy nobody has watched in production is not a thing to hand a delete
+  # to. Dropping a temp for, say, a FORGOTTEN_ARCHIVE path is useless but
+  # harmless (a temp is never content and the next pass re-strands it anyway).
+  # Gating this on the class, and escalating to the scoped rescan when the
+  # streak keeps climbing past an attempted remedy, is the NEXT increment.
   log_warn "profile '$1' has $_uwn path(s) failing $_uwa passes running;"\
            "dropping $_uwk transfer temp(s) so the next pass starts clean (a"\
            "temp is never content, and these have had $_uwa chances to help):"\
-           "$_uwl"
+           "$_uwl${_uwv:+ -> $_uwv}"
   sweep_settled "$1" "$2" unwedge
   return 0
 }
@@ -2125,17 +2386,7 @@ run_sync_profile() {
              "remote looks like. The cache is up to date with the remote."
     notify clear "$SERVICE_NAME"; return 0
   fi
-  MSG="Unison $UNISON_PROFILE failed (exit $RET)."
-  # NAME THE PATHS IN THE FLAG ITSELF. The flag is often the only thing a human
-  # ever reads about a fault, and "exit 2, go read the log" made them go and
-  # read the log, which on 2026-09-24 meant grepping the journal by hand for
-  # six paths unison had already printed plainly.
-  _rsf=$(failed_summary "$PROFILE")
-  if [ -n "$_rsf" ]; then
-    MSG="$MSG $_rsf, e.g. $(failed_paths "$PROFILE" | head -1)."
-  fi
-  MSG="$MSG Run it interactively and"
-  MSG="$MSG check ~/.unison/unison.log."
+  MSG=$(fault_message "$PROFILE" "$UNISON_PROFILE" "$RET")
   # ALWAYS log, THEN also notify. The old form logged only when NO notifier was
   # configured, which made a set-but-missing notifier swallow the fault whole:
   # notify() no-ops on an absent command and nothing else printed, so the
