@@ -45,7 +45,18 @@ set -eu
 # 2026-10-02 anchor fix landed here. Every other caller of this idiom in the
 # fleet already carries the same disable.
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null) || ROOT=
+# GIT_DIR IS CLEARED FOR THIS ONE CALL, and it is not belt and braces: git
+# EXPORTS GIT_DIR to every hook, and with it set and no GIT_WORK_TREE git takes
+# the `-C` directory as the work tree. So from a hook the anchor resolved to
+# $HERE itself (`.../modules/tests`), the `cd "$ROOT"` below landed there, and
+# `git ls-files` still returned repo-relative paths that no longer existed
+# relative to the new cwd. Measured 2026-11-05 committing from a linked
+# worktree: 1 of 484 files examined, in every repo that vendors this file.
+#
+# THE VACUITY FLOOR IS WHAT CAUGHT IT, which is the argument for having one: a
+# silent pass over a single file would have let the commit through unchecked.
+ROOT=$(unset GIT_DIR GIT_WORK_TREE
+  git -C "$HERE" rev-parse --show-toplevel 2>/dev/null) || ROOT=
 [ -n "$ROOT" ] || { echo "FAIL conventions: $HERE is not in a git repo" >&2
   exit 1; }
 EXEMPT=$HERE/conventions.exempt
