@@ -415,8 +415,17 @@ the pass ran and succeeded.
 .TP
 .B 75
 .RB ( EX_TEMPFAIL )
-SKIPPED: no work was done, because the remote was offline or rate-limited, or
-another pass held the lock. The next timer retries. The generated systemd unit
+SKIPPED: no work was done, because the remote was offline or rate-limited,
+another pass held the lock, or a suspend was in progress. A pass already
+running when the machine starts to suspend is ENDED, so nothing is left
+waiting on the FUSE mount when processes are frozen (such a process cannot be
+frozen, and the suspend fails); it holds a sleep
+.I delay
+lock while it runs, which logind honours even for a lid close. A pass that
+was ended that way, or that failed while the machine attempted a suspend or
+the source stopped answering, is INTERRUPTED rather than failed: it records no
+failing paths, raises no notification, and exits 75. The next timer retries.
+The generated systemd unit
 lists this under
 .B SuccessExitStatus
 so an offline machine does not accumulate failed units for an expected

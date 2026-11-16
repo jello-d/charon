@@ -2105,6 +2105,16 @@ do_sweep() {   # [-n|--dry-run] [profile]
 
 # The GATE for one profile:  0 go / EX_SKIP skip cheaply / 1 fault (notified).
 gate_profile() {   # <profile> <service-name>
+  # A SUSPEND ALREADY UNDER WAY IS A SKIP, before anything touches the mount.
+  # On dragonfly the pass that wedged the freeze STARTED three seconds before
+  # the lid closed; a timer can just as well fire after logind has announced a
+  # sleep, while the network is going and the freeze is moments away. The
+  # next timer runs it again.
+  if sleep_pending; then
+    log_warn "SKIPPED charon-$1: a suspend is in progress, and a pass started"\
+             "now would be walking the FUSE mount as the box freezes"
+    return "$EX_SKIP"
+  fi
   _gs=$(profile_source_name "$1")
   if [ -z "$_gs" ]; then
     notify flag "$2" "profile '$1' names no source"
@@ -2138,23 +2148,201 @@ gate_profile() {   # <profile> <service-name>
   return 0
 }
 
+# --- SUSPEND: no unison may be waiting on the FUSE mount at the freeze ------
+#
+# THE HAZARD, measured on dragonfly 2026-11-16. A lid closed three seconds into
+# a pass, and the box never slept: unison was stat'ing a path the mount had to
+# LIST, so it sat uninterruptibly in fuse_dentry_revalidate waiting for rclone.
+# NetworkManager took the network down on PrepareForSleep, systemd froze
+# user.slice (rclone included), and a task waiting on a frozen or offline FUSE
+# daemon can be neither frozen nor woken. "Failed to freeze unit user.slice",
+# then "1 tasks refusing to freeze ... task:unison state:D", four attempts in a
+# row, three and a half minutes awake with the lid shut and the session locked.
+#
+# THE INHIBITOR charon ALREADY HELD COULD NOT HAVE HELPED, and this is the part
+# worth knowing. It was a BLOCK inhibitor, and logind IGNORES block inhibitors
+# for a lid close by default (LidSwitchIgnoreInhibited=yes), which is precisely
+# how a laptop goes to sleep. It was held, the journal shows no denial, and it
+# did nothing. A block lock also REFUSES an explicit suspend rather than
+# deferring it, which this comment used to claim it did.
+#
+# A DELAY INHIBITOR IS THE RIGHT TOOL, and only half the fix on its own. logind
+# honours delay locks on every path including the lid, polkit grants them to
+# any session (block needs auth_admin_keep, which is why a seatless manager
+# used to be denied), and they DEFER rather than refuse, up to
+# InhibitDelayMaxSec (30s on this fleet, 5s by default). But a delay lock only
+# buys time: something has to USE it. So the pass runs under supervise_sleep,
+# which watches for logind's PreparingForSleep and, the moment it goes true,
+# ENDS unison and only then lets the lock go. A FUSE waiter honours SIGKILL
+# while its request is still queued; one already handed to rclone waits for
+# rclone's answer, which rclone can still give during the delay window
+# because nothing is frozen yet. That residual is bounded by the window rather
+# than unbounded, which is the improvement: before, nothing ended the pass.
+#
+# A SYSTEM sleep.target hook was the other shape on offer, and is deliberately
+# not built: it needs root to install, anything root EXECUTES must be root-owned
+# (and charon's payload lives in the user's home), and charon went sudo-free on
+# purpose. The delay lock reaches the same moment, before the freeze, from user
+# space.
+
+# Is logind preparing to suspend RIGHT NOW? Level-triggered, so a poll cannot
+# miss the edge the way a signal subscription started a moment too late can:
+# the property stays true from PrepareForSleep(true) until resume. Readable by
+# any user over the system bus. When busctl cannot answer, the honest reply is
+# "not that I can tell", because refusing passes on a box whose bus is
+# unreachable would stop the sync for a reason that has nothing to do with it.
+sleep_pending() {
+  command -v busctl >/dev/null 2>&1 || return 1
+  _spv=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+    org.freedesktop.login1.Manager PreparingForSleep 2>/dev/null) || return 1
+  [ "$_spv" = 'b true' ]
+}
+
+# How many suspends this boot has ATTEMPTED, successful or failed, or nothing
+# when the kernel does not say. A FAILED attempt is the one that matters here:
+# on dragonfly the box never slept, so no clock drift and no resume marks it,
+# but /sys/power/suspend_stats/fail counted all four. Comparing it across a
+# pass is the backstop for a sleep the watcher did not catch in time.
+# An empty answer compares equal to an empty answer, so a box that cannot say
+# behaves exactly as before: the failure is recorded as a failure.
+suspend_attempts() {
+  _sad=${CHARON_SUSPEND_STATS:-/sys/power/suspend_stats}
+  _sas=$(cat "$_sad/success" 2>/dev/null) || return 0
+  _saf=$(cat "$_sad/fail" 2>/dev/null) || return 0
+  case "$_sas:$_saf" in *[!0-9:]*|:*|*:) return 0 ;; esac
+  printf '%s\n' "$((_sas + _saf))"
+}
+
+# Run <cmd> in the background; if a suspend starts while it runs, END it.
+# Returns the command's own status (a killed one reads 137 or 143, which no
+# unison status can be, so run_sync_profile's trust gate already refuses its
+# failure list). Writes <marker> when it intervened, so the caller can say
+# INTERRUPTED rather than failed. An empty <marker> just skips the write.
+#
+# TERM FIRST, then KILL the command's CHILDREN before the command itself. The
+# command is `timeout ... unison`, so the process that must die is timeout's
+# child; KILLing timeout first would orphan unison and leave nothing that names
+# it. TERM is forwarded by timeout and is enough for a unison doing its own
+# work; KILL is for one waiting on the mount, where TERM stays pending.
+#
+# The watcher is a SUBSHELL polling a level-triggered property, and it is
+# killed as soon as the command ends, so a healthy pass pays one poll interval
+# of forks at most per second it runs and no latency at the end.
+#
+# THE WATCHER'S OWN `sleep` IS CUT OFF FROM THE OUTPUT PIPE. Every pass runs
+# under run_teed, whose `tee` ends only when the last writer closes the pipe.
+# The watcher is killed when the command ends, but a `sleep` it had started
+# would live on for up to one interval holding the pipe, and every pass would
+# end that much late. Its log line still goes to stderr, which is wanted.
+#
+# AND AN INT, TERM OR HUP AIMED AT THE SUPERVISOR IS FORWARDED to the command,
+# so ending the supervisor can never leave unison running on its own.
+supervise_sleep() {   # <marker-file> <cmd...>
+  _svm=$1; shift
+  _svpoll=${CHARON_SLEEP_POLL:-1}
+  _svgrace=${CHARON_SLEEP_GRACE:-2}
+  "$@" &
+  _svp=$!
+  trap 'kill -TERM "$_svp" 2>/dev/null' INT TERM HUP
+  (
+    trap - INT TERM HUP
+    # NOT THE SYNC LOCK. Every profile shares one flock, held on fd 9 by
+    # run_with_lock, and a child inherits it: the watcher's last `sleep`
+    # kept the lock for up to one interval after the pass ended, so the next
+    # profile's timer firing in that window SKIPPED with "another charon sync
+    # holds the lock". Found by this file's own end-to-end test, which ran two
+    # passes back to back. The command keeps the lock, because while unison
+    # runs the pass IS running; only the watcher lets it go.
+    exec 9>&-
+    while sleep "$_svpoll" </dev/null >/dev/null 2>&1; do
+      sleep_pending || continue
+      [ -z "$_svm" ] || : >"$_svm"
+      log_warn "a suspend is starting: ending this pass now, so nothing is"\
+               "left waiting on the FUSE mount when the box freezes. The next"\
+               "timer runs it again."
+      kill -TERM "$_svp" 2>/dev/null
+      _svg=0
+      while kill -0 "$_svp" 2>/dev/null && [ "$_svg" -lt "$_svgrace" ]; do
+        sleep 1 </dev/null >/dev/null 2>&1; _svg=$((_svg + 1))
+      done
+      if kill -0 "$_svp" 2>/dev/null; then
+        if command -v pkill >/dev/null 2>&1; then
+          pkill -KILL -P "$_svp" 2>/dev/null
+        fi
+        kill -KILL "$_svp" 2>/dev/null
+      fi
+      exit 0
+    done
+  ) &
+  _svw=$!
+  _svr=0
+  wait "$_svp" || _svr=$?
+  # A trapped signal ends `wait` early with 128+n while the command is still
+  # being torn down; wait again so the status returned is the COMMAND's.
+  if kill -0 "$_svp" 2>/dev/null; then
+    _svr=0
+    wait "$_svp" || _svr=$?
+  fi
+  trap - INT TERM HUP
+  kill "$_svw" 2>/dev/null
+  wait "$_svw" 2>/dev/null
+  return "$_svr"
+}
+
+# Was a FAILED pass really interrupted rather than failed? Prints the reason,
+# or nothing. Only ever asked about a non-zero pass: one that completed is a
+# success whatever happened around it.
+#
+# THREE SIGNALS, each covering what the one before cannot:
+#   - the watcher's marker: charon itself ended the pass for a suspend.
+#   - the suspend counter moved: the box ATTEMPTED to suspend during the pass,
+#     whether or not anything here noticed in time. This is the incident's own
+#     shape: after the thaw unison reported 62 unreadable paths at exit 1, a
+#     trusted status, and every one of them was recorded as a failing path.
+#     Nothing about those paths was wrong; they were what was being listed when
+#     the network went.
+#   - the source is no longer healthy: the network went without a suspend.
+#     THIS CANNOT HIDE A REAL FAULT FOREVER, which is worth stating because it
+#     is the obvious worry: the gate refused to START this pass unless the same
+#     health check passed, so an unhealthy answer now means it changed during
+#     the pass, and a source that stays unhealthy is skipped at the gate anyway.
+pass_interrupted() {   # <profile> <rc> <attempts-before> <marker>
+  [ "$2" -ne 0 ] || return 0
+  if [ -n "$4" ] && [ -e "$4" ]; then
+    printf 'a suspend began and charon ended the pass'
+    return 0
+  fi
+  _pia=$(suspend_attempts)
+  if [ -n "$3" ] && [ -n "$_pia" ] && [ "$_pia" != "$3" ]; then
+    printf 'the box attempted to suspend during the pass'
+    return 0
+  fi
+  _pis=$(profile_source_name "$1")
+  if [ -n "$_pis" ] && ! source_health "$_pis"; then
+    printf "source '%s' stopped answering during the pass" "$_pis"
+  fi
+  return 0
+}
+
 # Run unison for <unison-profile>, under a sleep inhibitor if one can be had
-# and WITHOUT it if not. Returns unison's own status.
+# and WITHOUT it if not, and always under the suspend watcher. Returns unison's
+# own status.
 #
-# unison blocks in uninterruptible D-state on a FUSE mount, so a suspend
-# mid-pass fails at the freeze step and (with logind retrying a lid close)
-# LOOPS. A sleep BLOCK inhibitor makes a suspend DEFER until the pass ends.
+# The inhibitor is still a NICETY, never a prerequisite, and that rule was paid
+# for: a BLOCK lock needs polkit authorization a --user manager with NO SEAT
+# does not get, the whole pass used to hang off that one command, and
+# manifestor failed 5 of 6 timed runs that way while manifold looked healthy. A
+# delay lock is granted to any session, so that denial should be gone, but the
+# degrade path stays: not syncing is strictly worse than syncing unprotected,
+# so a refusal WARNS and proceeds (still watched, with no time bought). The
+# inhibitor is PROBED with a throwaway acquire first, so a real non-zero is
+# always unison's, never polkit's.
 #
-# But the inhibitor is a NICETY, never a prerequisite. Acquiring a block
-# inhibitor needs polkit authorization that a --user manager session with NO
-# SEAT does not get: polkit answers "Access denied ... requires interactive
-# authentication" and systemd-inhibit exits 1. The whole pass used to hang off
-# that one command, so a denial did not degrade the sync, it CANCELLED it, and
-# manifestor failed 5 of 6 timed runs that way while manifold (seated session)
-# looked perfectly healthy. Not syncing is strictly worse than syncing
-# unprotected, so a denial WARNS and proceeds. The inhibitor is PROBED with a
-# throwaway acquire first, so a real non-zero is always unison's, never
-# polkit's.
+# THE WATCHER RUNS INSIDE THE LOCK by re-executing this impl under it, so the
+# lock lives exactly as long as the supervised pass: released the moment
+# unison is gone, never held a second longer. A background holder process was
+# the alternative and it can outlive the pass, delaying every suspend after an
+# interrupted run by the full window.
 #
 # The timeout is a BACKSTOP, not a pacer. At the old 600s it was neither: a
 # cold or large pass over FUSE routinely outran it, and every kill stranded a
@@ -2248,16 +2436,17 @@ push_safe_to_authorise() {   # <profile>
   return 1
 }
 
-run_unison_guarded() {   # <unison-profile> [capture-file]
+run_unison_guarded() {   # <unison-profile> [capture-file] [sleep-marker]
   _up=$1
   _ucap=${2:-}
+  _umark=${3:-}
   # Tell unison WHERE the profile is. charon has always had UNISON_DIR for
   # where it WRITES profiles, but never passed it on, so the two agreed only
   # because both default to ~/.unison. Override UNISON_DIR and charon would
   # write a profile unison never reads, then fail with a usage message that
   # names nothing. Export it so the writer and the reader cannot disagree.
   UNISON=$UNISON_DIR; export UNISON
-  _inh="systemd-inhibit --what=sleep --who=charon-sync --mode=block"
+  _inh="systemd-inhibit --what=sleep --who=charon-sync --mode=delay"
   set -- timeout --kill-after=30 "${CHARON_SYNC_TIMEOUT:-3600}" \
     unison "$_up" -auto -batch -ui text -silent
     # PULL-ONLY until authorised. Passed on the COMMAND LINE rather than written
@@ -2270,13 +2459,14 @@ run_unison_guarded() {   # <unison-profile> [capture-file]
     fi
   if $_inh --why="charon-sync probe" true 2>/dev/null; then
     run_teed "$_ucap" $_inh \
-      --why="unison $_up syncing (unfreezable on FUSE)" "$@"
+      --why="unison $_up: ended before sleep, so it cannot block the freeze" \
+      "$CHARON_LIBEXEC/charon-sync" __supervise "$_umark" "$@"
     return $?
   fi
   log_warn "cannot hold the sleep inhibitor (polkit denied, or"\
-           "systemd-inhibit absent); syncing UNPROTECTED -- a suspend"\
-           "mid-pass may wedge on the FUSE mount"
-  run_teed "$_ucap" "$@"
+           "systemd-inhibit absent); syncing UNPROTECTED: a suspend"\
+           "mid-pass is still watched for, but gets no time to end it"
+  run_teed "$_ucap" supervise_sleep "$_umark" "$@"
 }
 
 run_sync_profile() {
@@ -2308,7 +2498,32 @@ run_sync_profile() {
   CAPTURE=$(mktemp "${TMPDIR:-/tmp}/charon-uni-$PROFILE.XXXXXX" 2>/dev/null) \
     || CAPTURE=
   PASS_NAMED_A_PATH=
-  run_unison_guarded "$UNISON_PROFILE" "$CAPTURE"; RET=$?
+  # The watcher's marker lives beside the capture, so it shares its lifetime;
+  # with no capture there is no marker, and the other two interruption signals
+  # still apply.
+  _rsmark=
+  [ -z "$CAPTURE" ] || _rsmark=$CAPTURE.slept
+  _rssa=$(suspend_attempts)
+  run_unison_guarded "$UNISON_PROFILE" "$CAPTURE" "$_rsmark"; RET=$?
+
+  # AN INTERRUPTED PASS IS NOT A FAILED ONE, and it is decided HERE, before
+  # anything reads its failure list. Recording that list is how dragonfly's
+  # aborted suspend became "62 path(s) failing" on paths with nothing wrong,
+  # each one a first sighting walking towards the unwedge threshold. And
+  # SETTLING from it is worse: a path that dropped out of a list cut short by a
+  # vanished network looks settled, and settling deletes its transfer temp,
+  # the resume point. So nothing is recorded, nothing is settled, nothing is
+  # flagged, and the pass exits 75, which the unit already treats as success
+  # and check already reports as SKIPPED. The next timer runs it again.
+  _rsint=$(pass_interrupted "$PROFILE" "$RET" "$_rssa" "$_rsmark")
+  [ -z "$_rsmark" ] || rm -f "$_rsmark"
+  if [ -n "$_rsint" ]; then
+    [ -z "$CAPTURE" ] || rm -f "$CAPTURE"
+    log_warn "profile '$PROFILE': pass INTERRUPTED, not failed: $_rsint."\
+             "Nothing recorded; the next timer runs it again."
+    return "$EX_SKIP"
+  fi
+
   if [ -n "$CAPTURE" ]; then
     # SETTLED FIRST, because it is a diff against the record that
     # record_failures is about to overwrite. Only from a pass whose list is
@@ -3268,6 +3483,10 @@ case "$MODE" in
   uninstall) do_uninstall ;;
   config|status) do_status ;;
   check)     do_check ;;
+  # INTERNAL, never a user verb, and not in usage: the body that runs UNDER the
+  # sleep inhibitor, so the lock is held for exactly as long as the supervised
+  # pass and no longer. See run_unison_guarded.
+  __supervise) shift; supervise_sleep "$@" ;;
   *)         usage ;;
 esac
 exit $?
