@@ -80,3 +80,24 @@ path_without() {   # <tool>... -> a PATH dir missing ALL of them
   done
   printf '%s' "$_pw_dir"
 }
+
+# The kernel's MOUNT TABLE, faked: lists each <path> as a mount and points
+# CHARON_MOUNTINFO at it, so charon asks this table instead of the real one.
+#
+# A STUBBED `mountpoint` NO LONGER SAYS A SOURCE IS MOUNTED, and that is a
+# change in the question, not in the fixture's honesty: charon asks the mount
+# table (common_lib's mount_device), because `mountpoint -q` cannot tell a
+# dead mount from a live one and could hang on a stuck one. A test that means
+# "this rclone source is mounted" has to say so in the table, which is also
+# the only place the claim can be made precisely.
+fake_mounted() {   # <path>...
+  : > "$T/mountinfo"
+  _fmn=200
+  for _fmp in "$@"; do
+    printf '%s 1 0:%s / %s rw - fuse.rclone fake rw\n' "$_fmn" "$_fmn" \
+      "$(printf '%s' "$_fmp" | sed 's/\\/\\134/g; s/ /\\040/g')" \
+      >> "$T/mountinfo"
+    _fmn=$((_fmn + 1))
+  done
+  CHARON_MOUNTINFO=$T/mountinfo; export CHARON_MOUNTINFO
+}

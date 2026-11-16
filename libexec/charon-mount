@@ -98,7 +98,13 @@ check_prereqs() {
     exit 1
   fi
 
-  if [ ! -d "$MOUNTPOINT" ]; then
+  # NOT `[ -d ]` ALONE: on a DEAD mount (its daemon gone) that is false, the
+  # kernel answers ENOTCONN, so this used to "create" a directory that exists,
+  # mkdir refused, and the impl exited 1. That is every restart after an
+  # rclone crash, so Restart=on-failure could never bring the mount back.
+  # Found by test/fuse.t on a real husk. Anything in the mount table is left
+  # for do_mount to judge.
+  if [ -z "$(mount_device "$MOUNTPOINT")" ] && [ ! -d "$MOUNTPOINT" ]; then
     log_info "creating mountpoint directory: $MOUNTPOINT"
     mkdir -p "$MOUNTPOINT" || {
       log_error "failed to create mountpoint: $MOUNTPOINT"
@@ -249,22 +255,51 @@ ensure_rclone() {
 }
 
 do_status() {
-  if check_if_mounted; then
-    echo "$MOUNTPOINT is mounted (remote: ${REMOTE_NAME}:)"
-    return 0
-  else
-    echo "$MOUNTPOINT is not mounted"
-    return 1
-  fi
+  case $(endpoint_state "$MOUNTPOINT") in
+    live) echo "$MOUNTPOINT is mounted (remote: ${REMOTE_NAME}:)"; return 0 ;;
+    dead) echo "$MOUNTPOINT is a DEAD mount (its daemon is gone)"; return 1 ;;
+    stuck) echo "$MOUNTPOINT is mounted but NOT ANSWERING"; return 1 ;;
+    *) echo "$MOUNTPOINT is not mounted"; return 1 ;;
+  esac
+}
+
+# fusermount3 where it exists, else fusermount. One answer for every caller.
+umount_bin() {
+  if command -v fusermount3 >/dev/null 2>&1; then echo fusermount3
+  else echo fusermount; fi
 }
 
 do_mount() {
   check_prereqs
 
-  if check_if_mounted; then
-    log_info "mountpoint already mounted: $MOUNTPOINT"
-    return 0
-  fi
+  # WHAT IS AT THE MOUNTPOINT, asked without hanging on it (see common_lib's
+  # endpoint_state). `mountpoint -q` cannot tell a dead mount from a live one:
+  # after rclone dies (a crash, an OOM, or a deliberate abort before a suspend)
+  # the kernel keeps a husk that answers "not connected", except where the
+  # root's attributes are cached, so the same dead state read as "already
+  # mounted, nothing to do" on one box and "not mounted" on another. The first
+  # left the source down while the unit reported success; the second made
+  # rclone refuse to mount over the husk. Either way Restart=on-failure could
+  # never bring the mount back, and every sync pass faulted on a dead source
+  # until a human ran `fusermount -uz`. Measured on scratch mounts 2026-11-16.
+  case $(endpoint_state "$MOUNTPOINT") in
+    live)
+      log_info "mountpoint already mounted: $MOUNTPOINT"
+      return 0 ;;
+    dead)
+      log_warn "$MOUNTPOINT is a dead mount (its daemon is gone); clearing it"\
+               "before mounting"
+      "$(umount_bin)" -uz "$MOUNTPOINT" 2>/dev/null || {
+        log_error "could not clear the dead mount at $MOUNTPOINT"; return 1; }
+      ;;
+    stuck)
+      # A LIVE daemon that is not answering. Mounting over it is not possible
+      # and tearing it down is release's decision, not this one's, so refuse:
+      # the unit fails, Restart=on-failure retries, and the daemon may answer.
+      log_error "$MOUNTPOINT is mounted and not answering (its daemon is"\
+                "alive but stuck); not mounting over it"
+      return 1 ;;
+  esac
 
   # Core rclone mount flags for "feels like NFS" semantics.
   set -- mount "${REMOTE_NAME}:" "$MOUNTPOINT" \
@@ -295,18 +330,23 @@ do_mount() {
 }
 
 do_unmount() {
-  if ! check_if_mounted; then
-    log_info "mountpoint not mounted: $MOUNTPOINT"
-    return 0
-  fi
+  # The same three-way question as do_mount, for the same reason: a DEAD
+  # mount answers `mountpoint -q` either way depending on a cache, and leaving
+  # its husk behind is what stopped the next start from mounting. A dead or
+  # stuck mount is detached LAZILY, since its daemon cannot take part in an
+  # ordinary unmount, and a plain unmount of a stuck one could itself wait.
+  case $(endpoint_state "$MOUNTPOINT") in
+    none)
+      log_info "mountpoint not mounted: $MOUNTPOINT"
+      return 0 ;;
+    dead|stuck)
+      log_warn "$MOUNTPOINT is not answering; detaching it lazily"
+      "$(umount_bin)" -uz "$MOUNTPOINT" 2>/dev/null || {
+        log_error "failed to detach $MOUNTPOINT"; return 1; }
+      return 0 ;;
+  esac
 
-  # Prefer fusermount3 if available; fall back to fusermount
-  if command -v fusermount3 >/dev/null 2>&1; then
-    UMOUNT_BIN=fusermount3
-  else
-    UMOUNT_BIN=fusermount
-  fi
-
+  UMOUNT_BIN=$(umount_bin)
   log_info "unmounting $MOUNTPOINT"
   "$UMOUNT_BIN" -u "$MOUNTPOINT" 2>/dev/null || {
     log_error "failed to unmount $MOUNTPOINT"

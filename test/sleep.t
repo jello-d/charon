@@ -130,7 +130,7 @@ printf '4\n' > "$T/stats/fail"
 # supervise_sleep with NO suspend: invisible. Status preserved, no marker.
 for rc in 0 1 2 3; do
   rm -f "$T/mark"
-  supervise_sleep "$T/mark" sh -c "exit $rc"; got=$?
+  supervise_sleep "$T/mark" "" sh -c "exit $rc"; got=$?
   [ "$got" = "$rc" ] || fail "supervise_sleep turned exit $rc into $got"
   [ -e "$T/mark" ] && fail "supervise_sleep wrote the marker with no suspend"
 done
@@ -140,12 +140,29 @@ done
 # output pipe for up to one interval and tee would wait for it. Measured with
 # a deliberately long poll so a leak is unmistakable.
 _t0=$(_now)
-CHARON_SLEEP_POLL=3 run_teed "$T/cap" supervise_sleep "" sh -c 'exit 2'
+CHARON_SLEEP_POLL=3 run_teed "$T/cap" supervise_sleep "" "" sh -c 'exit 2'
 got=$?; _el=$(( $(_now) - _t0 ))
 [ "$got" = 2 ] || fail "run_teed + supervise_sleep turned exit 2 into $got"
 [ "$_el" -lt 2 ] \
   || fail "a 0s command took ${_el}s through run_teed: the watcher's sleep is
   holding the output pipe open, so every pass ends one poll interval late"
+
+# pids_alive: a ZOMBIE IS NOT ALIVE. It has exited and only awaits reaping,
+# and `kill -0` would call it alive, so the supervisor would hold the lock for
+# its whole wait over a process that is already gone. A parent that execs
+# into something that never reaps keeps a zombie around deterministically.
+sh -c 'sleep 0.1 & exec sleep 40.6' &
+_zp=$!
+sleep 0.5
+_z=$(pgrep -P "$_zp" 2>/dev/null)
+case $(ps -o stat= -p "$_z" 2>/dev/null) in
+  Z*) : ;; *) fail "the zombie fixture did not produce a zombie" ;;
+esac
+kill -0 "$_z" 2>/dev/null || fail "kill -0 no longer sees a zombie, so this
+  case proves nothing"
+pids_alive "$_z" && fail "pids_alive called a ZOMBIE alive"
+pids_alive "$_zp" || fail "pids_alive called a running process dead"
+kill -KILL "$_zp" 2>/dev/null; wait "$_zp" 2>/dev/null
 
 # ----------------------------------------------------------------- part 4 ----
 # A SUSPEND MID-RUN ENDS THE COMMAND, through a real `timeout`, whose CHILD is
@@ -155,7 +172,7 @@ _midrun() {   # <unique-secs> <child-script>
   rm -f "$T/mark" "$T/sleeping"
   ( sleep 0.6; : > "$T/sleeping" ) &
   _t0=$(_now)
-  supervise_sleep "$T/mark" timeout 60 sh -c "$2"; _mr=$?
+  supervise_sleep "$T/mark" "" timeout 60 sh -c "$2"; _mr=$?
   _el=$(( $(_now) - _t0 ))
   rm -f "$T/sleeping"
   if _alive "$1"; then _reap "$1"
@@ -175,7 +192,7 @@ _midrun 40.2 "trap '' TERM; exec sleep 40.2"
 # actually gone. A command that takes a moment over its TERM and then exits 7
 # tells the two apart: 7 is the command's answer, 143 is the interrupted wait.
 rm -f "$T/sup.rc"
-( supervise_sleep "" sh -c "trap 'sleep 0.5; exit 7' TERM
+( supervise_sleep "" "" sh -c "trap 'sleep 0.5; exit 7' TERM
     while :; do sleep 0.1; done"; echo $? > "$T/sup.rc" ) &
 _sup=$!
 sleep 0.5
@@ -190,7 +207,7 @@ wait "$_sup" 2>/dev/null
 # stopped unit, or a Ctrl-C on an interactive pass, leaves unison running on
 # the mount with nothing watching it.
 rm -f "$T/sleeping"
-( supervise_sleep "" timeout 60 sh -c 'exec sleep 40.3' ) &
+( supervise_sleep "" "" timeout 60 sh -c 'exec sleep 40.3' ) &
 _sup=$!
 sleep 0.5
 kill -TERM "$_sup"

@@ -2217,7 +2217,8 @@ suspend_attempts() {
 # Returns the command's own status (a killed one reads 137 or 143, which no
 # unison status can be, so run_sync_profile's trust gate already refuses its
 # failure list). Writes <marker> when it intervened, so the caller can say
-# INTERRUPTED rather than failed. An empty <marker> just skips the write.
+# INTERRUPTED rather than failed. <source> is what to RELEASE if the command
+# will not die (see end_for_sleep); empty means nothing may be released.
 #
 # TERM FIRST, then KILL the command's CHILDREN before the command itself. The
 # command is `timeout ... unison`, so the process that must die is timeout's
@@ -2237,10 +2238,15 @@ suspend_attempts() {
 #
 # AND AN INT, TERM OR HUP AIMED AT THE SUPERVISOR IS FORWARDED to the command,
 # so ending the supervisor can never leave unison running on its own.
-supervise_sleep() {   # <marker-file> <cmd...>
-  _svm=$1; shift
+supervise_sleep() {   # <marker-file> <source|""> <cmd...>
+  _svm=$1; _svsrc=$2; shift 2
   _svpoll=${CHARON_SLEEP_POLL:-1}
-  _svgrace=${CHARON_SLEEP_GRACE:-2}
+  # The marker doubles as the signal that the watcher is mid-intervention, so
+  # there is always one, even when the caller did not ask for it.
+  _svown=
+  if [ -z "$_svm" ]; then
+    _svm=${TMPDIR:-/tmp}/charon-sleep.$$; _svown=y; rm -f "$_svm"
+  fi
   "$@" &
   _svp=$!
   trap 'kill -TERM "$_svp" 2>/dev/null' INT TERM HUP
@@ -2256,21 +2262,8 @@ supervise_sleep() {   # <marker-file> <cmd...>
     exec 9>&-
     while sleep "$_svpoll" </dev/null >/dev/null 2>&1; do
       sleep_pending || continue
-      [ -z "$_svm" ] || : >"$_svm"
-      log_warn "a suspend is starting: ending this pass now, so nothing is"\
-               "left waiting on the FUSE mount when the box freezes. The next"\
-               "timer runs it again."
-      kill -TERM "$_svp" 2>/dev/null
-      _svg=0
-      while kill -0 "$_svp" 2>/dev/null && [ "$_svg" -lt "$_svgrace" ]; do
-        sleep 1 </dev/null >/dev/null 2>&1; _svg=$((_svg + 1))
-      done
-      if kill -0 "$_svp" 2>/dev/null; then
-        if command -v pkill >/dev/null 2>&1; then
-          pkill -KILL -P "$_svp" 2>/dev/null
-        fi
-        kill -KILL "$_svp" 2>/dev/null
-      fi
+      : >"$_svm"
+      end_for_sleep "$_svp" "$_svsrc"
       exit 0
     done
   ) &
@@ -2284,9 +2277,87 @@ supervise_sleep() {   # <marker-file> <cmd...>
     wait "$_svp" || _svr=$?
   fi
   trap - INT TERM HUP
-  kill "$_svw" 2>/dev/null
-  wait "$_svw" 2>/dev/null
+  # IF THE WATCHER IS INTERVENING, LET IT FINISH. The command it killed is
+  # `timeout`, which dies at once, while unison may still be stuck behind it;
+  # killing the watcher here would cut the escalation off and release the
+  # lock with unison still waiting on the mount. That is exactly what happened
+  # on dragonfly's second lid test.
+  if [ -e "$_svm" ]; then
+    wait "$_svw" 2>/dev/null
+  else
+    kill "$_svw" 2>/dev/null
+    wait "$_svw" 2>/dev/null
+  fi
+  [ -z "$_svown" ] || rm -f "$_svm"
   return "$_svr"
+}
+
+# A suspend is starting: end <pid> (`timeout ... unison`) and make sure what
+# it runs is GONE before returning, because returning is what lets the delay
+# lock go and the freeze begin. Called by the watcher, inside the lock.
+#
+# THE ESCALATION IS MEASURED, NOT GUESSED (dragonfly, 2026-11-16, and scratch
+# mounts the same day):
+#   TERM     enough for a unison doing its own work. timeout forwards it.
+#   KILL     to timeout's CHILD first, then timeout, or unison is orphaned.
+#   RELEASE  if unison is STILL ALIVE half a second after KILL, it is waiting
+#            on a FUSE request the mount's daemon has already taken, and the
+#            kernel will not abandon that request for any signal. On the lid
+#            test the network had gone 2ms after logind's announcement, so
+#            rclone sat on a dead connection and unison sat on rclone. Only
+#            aborting the connection frees it (0.3s, measured). That is the
+#            provider's job, so it is asked for by name: `charon source
+#            release`, which refuses anything charon does not own.
+#   WAIT     for unison itself to be gone, bounded, before returning.
+# The total has to fit logind's delay window (30s on this fleet, 5s by
+# default), so the steps are short: one poll, a 1s grace, half a second.
+end_for_sleep() {   # <pid> <source|"">
+  # REMEMBER THE CHILDREN NOW: once timeout is killed, an orphaned unison has
+  # a new parent and nothing here could name it again.
+  _efc=$(pgrep -P "$1" 2>/dev/null) || _efc=
+  log_warn "a suspend is starting: ending this pass now, so nothing is"\
+           "left waiting on the FUSE mount when the box freezes. The next"\
+           "timer runs it again."
+  kill -TERM "$1" 2>/dev/null
+  _efg=0
+  while kill -0 "$1" 2>/dev/null \
+        && [ "$_efg" -lt "${CHARON_SLEEP_GRACE:-1}" ]; do
+    sleep 1 </dev/null >/dev/null 2>&1; _efg=$((_efg + 1))
+  done
+  if kill -0 "$1" 2>/dev/null; then
+    if command -v pkill >/dev/null 2>&1; then
+      pkill -KILL -P "$1" 2>/dev/null
+    fi
+    kill -KILL "$1" 2>/dev/null
+  fi
+  [ -n "$_efc" ] || return 0
+  sleep 0.5 </dev/null >/dev/null 2>&1
+  pids_alive $_efc || return 0
+  if [ -n "$2" ]; then
+    log_warn "unison did not exit on SIGKILL: it is waiting on a request the"\
+             "mount's daemon has taken and will not answer. Releasing source"\
+             "'$2' so the suspend can go ahead."
+    "$CHARON_LIBEXEC/charon-source" release "$2" || :
+  fi
+  _efw=0
+  while pids_alive $_efc \
+        && [ "$_efw" -lt "${CHARON_SLEEP_RELEASE_WAIT:-50}" ]; do
+    sleep 0.1 </dev/null >/dev/null 2>&1; _efw=$((_efw + 1))
+  done
+  if pids_alive $_efc; then
+    log_warn "unison is STILL waiting on the mount; this suspend may fail"
+  fi
+  return 0
+}
+
+# Is any of these pids still a live process? A zombie (state Z) is not: it has
+# exited and only awaits reaping, and `kill -0` would call it alive.
+pids_alive() {   # <pid>...
+  for _pap in "$@"; do
+    _pas=$(ps -o stat= -p "$_pap" 2>/dev/null) || continue
+    case $_pas in Z*|'') ;; *) return 0 ;; esac
+  done
+  return 1
 }
 
 # Was a FAILED pass really interrupted rather than failed? Prints the reason,
@@ -2436,10 +2507,11 @@ push_safe_to_authorise() {   # <profile>
   return 1
 }
 
-run_unison_guarded() {   # <unison-profile> [capture-file] [sleep-marker]
+run_unison_guarded() {   # <unison-profile> [capture] [sleep-marker] [source]
   _up=$1
   _ucap=${2:-}
   _umark=${3:-}
+  _usrc=${4:-}
   # Tell unison WHERE the profile is. charon has always had UNISON_DIR for
   # where it WRITES profiles, but never passed it on, so the two agreed only
   # because both default to ~/.unison. Override UNISON_DIR and charon would
@@ -2460,13 +2532,13 @@ run_unison_guarded() {   # <unison-profile> [capture-file] [sleep-marker]
   if $_inh --why="charon-sync probe" true 2>/dev/null; then
     run_teed "$_ucap" $_inh \
       --why="unison $_up: ended before sleep, so it cannot block the freeze" \
-      "$CHARON_LIBEXEC/charon-sync" __supervise "$_umark" "$@"
+      "$CHARON_LIBEXEC/charon-sync" __supervise "$_umark" "$_usrc" "$@"
     return $?
   fi
   log_warn "cannot hold the sleep inhibitor (polkit denied, or"\
            "systemd-inhibit absent); syncing UNPROTECTED: a suspend"\
            "mid-pass is still watched for, but gets no time to end it"
-  run_teed "$_ucap" supervise_sleep "$_umark" "$@"
+  run_teed "$_ucap" supervise_sleep "$_umark" "$_usrc" "$@"
 }
 
 run_sync_profile() {
@@ -2504,7 +2576,8 @@ run_sync_profile() {
   _rsmark=
   [ -z "$CAPTURE" ] || _rsmark=$CAPTURE.slept
   _rssa=$(suspend_attempts)
-  run_unison_guarded "$UNISON_PROFILE" "$CAPTURE" "$_rsmark"; RET=$?
+  run_unison_guarded "$UNISON_PROFILE" "$CAPTURE" "$_rsmark" \
+    "$(profile_source_name "$PROFILE")"; RET=$?
 
   # AN INTERRUPTED PASS IS NOT A FAILED ONE, and it is decided HERE, before
   # anything reads its failure list. Recording that list is how dragonfly's

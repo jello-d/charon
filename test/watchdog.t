@@ -17,6 +17,7 @@ export CHARON_REMOTE=testremote          # -> ~/testremote + ~/.testremote
 
 M=$T/testremote                          # the "mount"
 C=$T/.testremote                         # the cache
+fake_mounted "$M"                        # ...and the kernel agrees it is one
 mkdir -p "$T/bin" "$T/.cache" "$XDG_CONFIG_HOME/charon/profiles.d"
 printf 'SUBTREE=Docs\n' > "$XDG_CONFIG_HOME/charon/profiles.d/docs.conf"
 

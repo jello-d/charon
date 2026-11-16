@@ -11,6 +11,7 @@ harness_init skip
 export HOME=$T
 export XDG_CONFIG_HOME=$T/.config
 export CHARON_REMOTE=testremote          # -> ~/testremote + ~/.testremote
+fake_mounted "$T/testremote"             # the table agrees it is mounted
 
 mkdir -p "$T/bin" "$T/.testremote/Docs" "$T/.cache" "$T/testremote/Docs"
 mkdir -p "$XDG_CONFIG_HOME/charon/profiles.d"

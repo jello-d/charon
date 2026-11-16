@@ -174,6 +174,69 @@ never_content_excludes() {
                 "--exclude" "$TWIN_GLOB"  "--exclude" "$TWIN_GLOB_N"
 }
 
+# --- WHAT IS ACTUALLY AT A MOUNTPOINT, asked without hanging on it ----------
+#
+# ANY QUESTION ASKED THROUGH A FUSE MOUNT CAN HANG FOREVER, and `timeout` does
+# not bound it. Measured 2026-11-16 on scratch rclone mounts: a `stat -f` on a
+# mount whose daemon is alive but stuck on the network became an UNKILLABLE
+# D-state process of its own, and `timeout 3` waited for it with everything
+# else. So these helpers never wait on the mount itself: whether something is
+# mounted comes from the kernel's mount table, and the one probe that must
+# touch the mount runs in the background and is ABANDONED if it does not
+# answer.
+#
+# AND `mountpoint -q` CANNOT TELL A DEAD MOUNT FROM A LIVE ONE, which is the
+# reason this exists. After the daemon dies (a crash, an OOM, or an abort) the
+# kernel keeps the mount and answers ENOTCONN, except where it has the root's
+# attributes cached. The same dead state gave `mountpoint -q` 0 on dragonfly
+# and 1 on manifestor, so "already mounted, nothing to do" and "not mounted,
+# mount it (which then fails)" depended on a cache.
+
+# The mount table's device for <path> ("0:62"), or nothing. No FUSE request:
+# /proc/self/mountinfo is the kernel's own list. Mount points there are
+# octal-escaped (a space is \040, a backslash \134), so the path is escaped
+# the same way before comparing; field 5 is the mount point, field 3 its
+# device.
+mount_device() {   # <path>
+  _mdp=$(printf '%s' "$1" | sed 's/\\/\\134/g; s/ /\\040/g')
+  # ENVIRON, NOT `awk -v`: -v processes backslash escapes, so the \040 built
+  # above would turn back into a space and never match the table's \040.
+  _CHARON_MD=$_mdp awk '$5 == ENVIRON["_CHARON_MD"] { d = $3 }
+    END { if (d != "") print d }' \
+    "${CHARON_MOUNTINFO:-/proc/self/mountinfo}" 2>/dev/null
+}
+
+# none | live | dead | stuck, for the mount at <path>:
+#   none   nothing is mounted there.
+#   live   the mount answered.
+#   dead   it answered "Transport endpoint is not connected": its daemon is
+#          gone, so the mount is a husk that a lazy unmount clears.
+#   stuck  it did not answer within the deadline: the daemon is wholly
+#          wedged. The probe is left behind, because it cannot be killed, and
+#          it ends when the daemon finally answers.
+# NOTE WHAT `live` DOES NOT SAY: that nothing on the mount is stuck. rclone
+# serves requests concurrently, so a statfs is answered while one lookup sits
+# on a dead connection (measured: the incident's state reads `live`). Whether
+# a request is stuck is fusectl's `waiting` count, which is what `charon source
+# release` checks; this answers only "is there a working mount here at all".
+endpoint_state() {   # <path> [deadline, tenths of a second]
+  [ -n "$(mount_device "$1")" ] || { echo none; return 0; }
+  _eso=$(mktemp "${TMPDIR:-/tmp}/charon-probe.XXXXXX") \
+    || { echo stuck; return 0; }
+  stat -f -c %T -- "$1" >"$_eso" 2>&1 </dev/null &
+  _esp=$!
+  _esn=0
+  while kill -0 "$_esp" 2>/dev/null; do
+    if [ "$_esn" -ge "${2:-50}" ]; then
+      echo stuck; rm -f "$_eso"; return 0
+    fi
+    sleep 0.1; _esn=$((_esn + 1))
+  done
+  if grep -q 'not connected' "$_eso" 2>/dev/null; then echo dead
+  else echo live; fi
+  rm -f "$_eso"
+}
+
 # A CHECK VERDICT SAYS WHETHER AN APPLY WOULD HELP, which is a different
 # question from "is anything wrong" and the only one an integrator can act on.
 #

@@ -41,7 +41,8 @@ PROFILES_DIR="$CHARON_CONFIG/profiles.d"
 
 usage() {
   cat <<EOF
-usage: $APP_NAME <list|show|probe|audit|status|health|seed|up|down> [source]
+usage: $APP_NAME <list|show|probe|audit|status|health|seed|up|down|release>
+       [source]
 
   list            configured sources, plus the implicit 'default'
   provider <name> print which provider backs it
@@ -52,7 +53,9 @@ usage: $APP_NAME <list|show|probe|audit|status|health|seed|up|down> [source]
   health <name>   deep probe:  0 online / 2 offline / 3 throttled
   seed <name> <subtree> <dest>   bulk-populate, if the provider can
   up <name>       bring the source up
-  down <name>     release it
+  down <name>     take it down
+  release <name>  abort a mount whose daemon will not answer, so nothing is
+                  left waiting on it; its unit brings it back (rclone only)
 EOF
 }
 
@@ -100,12 +103,13 @@ do_status() {   # <source>
   [ -n "$_m" ] || { log_error "source '$1' has no MOUNT"; return 1; }
   case "$(source_provider "$1")" in
     rclone)
-      # charon mounted it, so it MUST still be a mountpoint. A plain directory
-      # where a mount should be is the dead-mount case, not an ordinary dir.
-      if command -v mountpoint >/dev/null 2>&1; then
-        mountpoint -q "$_m"; return $?
-      fi
-      mount | grep -q "on $_m "; return $? ;;
+      # charon mounted it, so it MUST still be a mountpoint, and a LIVE one. A
+      # plain directory where a mount should be is the dead-mount case; so is
+      # a husk whose daemon has gone, which `mountpoint -q` called up or down
+      # depending on a cache, and which it could also HANG on if the daemon
+      # were alive but stuck. endpoint_state asks the kernel's table and never
+      # waits on the mount itself (see common_lib).
+      [ "$(endpoint_state "$_m")" = live ] ;;
     *)
       # Something else owns the tree, so charon cannot assume it is a mount:
       # a plain directory is a legitimate BYO source. But if it WAS a
@@ -638,6 +642,78 @@ do_updown() {   # <up|down> <source>
   esac
 }
 
+# RELEASE: a request on this source's mount has been TAKEN by its daemon and
+# will not be answered, and something must stop waiting on it NOW. The case is
+# a suspend: on 2026-11-16 the network went 2ms after logind announced a sleep,
+# rclone sat on a dead connection for its 5-minute idle timeout, and unison
+# waited on rclone uninterruptibly. SIGKILL cannot help once the daemon has the
+# request; the kernel only abandons one still QUEUED. Measured on a scratch
+# mount: a killed waiter stayed in D until the connection was ABORTED, then
+# was gone within 0.3s. So: abort the connection, which fails every pending
+# request at once, and kill the daemon, so the mount unit's Restart=on-failure
+# brings a fresh mount back (after the box wakes, if it is going to sleep).
+#
+# THE COST IS ACCEPTED, NOT HIDDEN: the mount is down for the length of a unit
+# restart, and anything holding a file open on it gets an error. The cache is
+# what the user works from; unison retries; a transfer in flight was writing
+# to a temp, so the next pass redoes it.
+#
+# FOUR GUARDS, each a reason not to tear a mount down:
+#   - rclone only. PROVIDER=none is someone else's tree, and charon never
+#     mounts or unmounts what it does not own.
+#   - something must actually be mounted there (the kernel's table, asked
+#     without touching the mount).
+#   - the connection's abort file must be OURS to write: fusectl gives it to
+#     the user who mounted, so a mount we do not own fails here, not later.
+#   - at least one request must be WAITING. With none, whatever is stuck is
+#     not stuck on this mount and an abort would cost the mount for nothing.
+do_release() {   # <source>
+  case "$(source_provider "$1")" in
+    rclone) : ;;
+    none) log_warn "source '$1' has PROVIDER=none: charon does not own that"\
+                   "tree, so it will not tear its mount down"
+          return 1 ;;
+    *) log_error "source '$1': unknown PROVIDER '$(source_provider "$1")'"
+       return 1 ;;
+  esac
+  _rlm=$(source_get "$1" MOUNT)
+  [ -n "$_rlm" ] || { log_error "source '$1' has no MOUNT"; return 1; }
+  _rld=$(mount_device "$_rlm")
+  if [ -z "$_rld" ]; then
+    log_warn "source '$1': nothing is mounted at $_rlm; nothing to release"
+    return 0
+  fi
+  _rlc=${CHARON_FUSECTL:-/sys/fs/fuse/connections}/${_rld#*:}
+  if [ ! -w "$_rlc/abort" ]; then
+    log_error "source '$1': cannot abort the connection at $_rlm"\
+              "($_rlc/abort is not writable: not a FUSE mount, or not ours)"
+    return 1
+  fi
+  _rlw=$(cat "$_rlc/waiting" 2>/dev/null) || _rlw=
+  case $_rlw in
+    ''|*[!0-9]*|0)
+      log_warn "source '$1': no request is waiting on $_rlm, so whatever is"\
+               "stuck is not stuck on this mount; leaving it alone"
+      return 1 ;;
+  esac
+  log_warn "source '$1': aborting the FUSE connection at $_rlm ($_rlw"\
+           "request(s) its daemon will not answer); the mount comes back"\
+           "when its unit restarts"
+  printf '1\n' >"$_rlc/abort" \
+    || { log_error "source '$1': the abort was refused"; return 1; }
+  _rlu="charon-mount@$1.service"
+  _rlp=$(systemctl --user show -p MainPID --value "$_rlu" 2>/dev/null) \
+    || _rlp=
+  case $_rlp in
+    ''|0|*[!0-9]*)
+      log_warn "source '$1': $_rlu has no running daemon, so nothing will"\
+               "restart the mount; run '${APP_NAME%% *} up $1'" ;;
+    *) kill -KILL "$_rlp" 2>/dev/null \
+         || log_warn "source '$1': could not end the daemon (pid $_rlp)" ;;
+  esac
+  return 0
+}
+
 _need() {
   [ -n "$1" ] && return 0
   log_error "a source name is required"; usage >&2; exit 2
@@ -703,6 +779,7 @@ case "${1:-}" in
   show)  _need "${2:-}"; _known "$2"; do_show "$2" ;;
   probe) _need "${2:-}"; _known "$2"; do_probe "$2" ;;
   audit) _need "${2:-}"; _known "$2"; do_audit "$2" ;;
+  release) _need "${2:-}"; _known "$2"; do_release "$2" ;;
   # up/down take NO _known gate, on purpose: see the comment on _known.
   up)    _need "${2:-}"; do_updown up "$2" ;;
   down)  _need "${2:-}"; do_updown down "$2" ;;

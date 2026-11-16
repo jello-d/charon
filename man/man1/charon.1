@@ -107,12 +107,19 @@ schedules nothing on its own: only this verb does.
 .B uninstall
 never touches the cache or your configuration.
 .TP
-.B charon source " " <list|show|probe|up|down> " " [name]
+.B charon source " " <list|show|probe|up|down|release> " " [name]
 Manage the trees charon caches.
 .B probe
 MEASURES a backend's traits (case sensitivity, whether mtimes stick,
 permissions, symlinks) and records them; the Unison profile is derived from
 them. See TRAITS.
+.B release
+aborts the FUSE connection of an rclone-backed source whose daemon has taken
+a request it will not answer, and ends that daemon so its unit restarts it: the
+mount is down for the length of the restart, and anything with a file open on
+it gets an error. It refuses a source charon does not own, and refuses when no
+request is waiting. A sync pass uses it on its own only when a suspend is
+starting and its unison is stuck on the mount (see EXIT STATUS).
 .PP
 Every older spelling
 .RB ( "charon sync run <p>" ", " "charon mount install" ", ...)"
@@ -421,7 +428,13 @@ running when the machine starts to suspend is ENDED, so nothing is left
 waiting on the FUSE mount when processes are frozen (such a process cannot be
 frozen, and the suspend fails); it holds a sleep
 .I delay
-lock while it runs, which logind honours even for a lid close. A pass that
+lock while it runs, which logind honours even for a lid close. If unison
+survives being killed, because it is waiting on a request the mount's daemon
+has already taken (typically a listing on a network that has just gone), the
+pass
+.BR release s
+the source so the suspend can proceed, and the mount comes back after wake. A
+pass that
 was ended that way, or that failed while the machine attempted a suspend or
 the source stopped answering, is INTERRUPTED rather than failed: it records no
 failing paths, raises no notification, and exits 75. The next timer retries.

@@ -13,6 +13,7 @@ harness_init verbs
 export HOME=$T
 export XDG_CONFIG_HOME=$T/.config
 export CHARON_REMOTE=testremote
+fake_mounted "$T/testremote"   # the implicit source's mount, per the table
 CFG=$XDG_CONFIG_HOME/charon
 mkdir -p "$T/bin" "$CFG/profiles.d" "$T/testremote/Docs" \
          "$T/.testremote/Docs"
