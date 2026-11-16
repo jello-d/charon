@@ -1863,7 +1863,13 @@ fault_message() {   # <profile> <unison-profile> <rc>
   # read the log, which on 2026-09-24 meant grepping the journal by hand for
   # six paths unison had already printed plainly.
   _fms=$(failed_summary "$1")
-  _fmp=$(failed_paths "$1" | head -1)
+  # A READER THAT DRAINS, NOT ONE THAT EXITS. `| head -1` closes the pipe while
+  # failed_paths may still be writing, and a systemd service runs with SIGPIPE
+  # IGNORED (IgnoreSIGPIPE=yes), so every later write fails with EPIPE and dash
+  # reports each one as "printf: printf: I/O error". dragonfly logged eleven of
+  # those, which read exactly like I/O errors on the FUSE mount. `sed -n 1p`
+  # reads to the end, so nothing ever writes into a closed pipe.
+  _fmp=$(failed_paths "$1" | sed -n 1p)
   [ -z "$_fms" ] || _fmm="$_fmm $_fms, e.g. $_fmp."
   # SAY WHAT THE WEDGE IS, not merely where the log lives. "Run it
   # interactively and check ~/.unison/unison.log" was true and, on 2026-11-05,
@@ -2479,7 +2485,7 @@ do_status() {
       _fsum=$(failed_summary "$_p" "$_now")
       if [ -n "$_fsum" ]; then
         printf '    failing:  %s\n' "$_fsum"
-        failed_paths "$_p" | head -3 | sed 's/^/                /'
+        failed_paths "$_p" | sed -n 1,3p | sed 's/^/                /'
         _fn=$(failed_paths "$_p" | wc -l | tr -d ' ')
         [ "$_fn" -gt 3 ] && printf '                ... and %s more\n' \
           "$((_fn - 3))"

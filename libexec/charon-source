@@ -453,7 +453,11 @@ do_audit() {   # <source>
              "sync one, convert it back to a real file in the Drive UI:"
     # $_af, never $_at: the staged file has already been renamed into place by
     # this point, which is why the two seds below read $_af too.
-    sed -n 's/^SKIPPED=/    export-only: /p' "$_af" | head -10
+    # `sed -n 1,10p`, NOT `head -10`: on 2026-10-04 this record held 540 DUPE
+    # lines, more than one write's worth, and the sweep unit runs with SIGPIPE
+    # IGNORED, so a reader that exits early turns every later write into an
+    # EPIPE error in the journal. A reader that drains cannot.
+    sed -n 's/^SKIPPED=/    export-only: /p' "$_af" | sed -n 1,10p
   fi
   if [ "$_ad" = 0 ] && [ "$_an" = 0 ]; then
     log_info "source '$1': remote clean, no duplicate names (across:"\
@@ -473,7 +477,7 @@ do_audit() {   # <source>
     log_error "  rclone dedupe --dedupe-mode largest ${_r}:<subtree>"
     log_error "Verify first with --dry-run, and note a file you do not OWN"\
               "returns 403 and must be fixed from the Drive UI."
-    sed -n 's/^DUPE=/  dup: /p' "$_af" | head -10
+    sed -n 's/^DUPE=/  dup: /p' "$_af" | sed -n 1,10p
   fi
   if [ "$_an" != 0 ]; then
     log_error "source '$1': $_an object(s) have no stored size AND are not"\
@@ -481,7 +485,7 @@ do_audit() {   # <source>
               "export-only object would have been omitted, and a real one"\
               "would have a size. Read one with"\
               "\`rclone cat --count 64\` before assuming anything."
-    sed -n 's/^NOCONTENT=/  unexplained: /p' "$_af" | head -10
+    sed -n 's/^NOCONTENT=/  unexplained: /p' "$_af" | sed -n 1,10p
   fi
   return 1
 }

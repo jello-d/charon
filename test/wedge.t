@@ -313,4 +313,22 @@ printf '%s' "$_m" | grep -qF 'unison.log' \
 printf '%s' "$_m" | grep -qF 'FORGOTTEN' \
   && fail "the fault message classified a wedge with no path to classify" || :
 
+# ----------------------------------------------------------------- part 8 ----
+# THE FAULT MESSAGE MUST NOT WRITE INTO A CLOSED PIPE. A systemd service runs
+# with SIGPIPE IGNORED (IgnoreSIGPIPE=yes), so a reader that exits early turns
+# every later write into EPIPE, and dash words that as
+# "printf: printf: I/O error". dragonfly logged eleven of them on 2026-11-16,
+# which read exactly like I/O errors on the FUSE mount. Reproduced the way
+# systemd causes it: SIGPIPE ignored, a record long enough that the producer
+# is still writing when the first path has been read.
+mkdir -p "$T/state/failed"
+{ printf 'LAST=1\nRC=1\n'
+  i=1; while [ "$i" -le 400 ]; do
+    printf 'FAILED=1 1 dir/path number %s.pdf\n' "$i"; i=$((i + 1)); done
+} > "$T/state/failed/docs"
+( trap '' PIPE; fault_message docs charon-docs 1 >/dev/null ) 2>"$T/epipe"
+grep -q 'I/O error' "$T/epipe" \
+  && fail "the fault message still writes into a closed pipe: $(head -2 \
+  "$T/epipe")" || :
+
 pass "7 wedge classes, the precedence that was the bug, and both consumers"
