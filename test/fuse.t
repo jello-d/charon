@@ -46,7 +46,9 @@ _cleanup() {
 }
 _hc="'$T'"
 # shellcheck disable=SC2064  # the literal is the point, see harness_lib
-trap "_cleanup; rm -rf -- $_hc" EXIT INT TERM
+trap "_cleanup; rm -rf -- $_hc" EXIT
+trap 'exit 130' INT     # a signal ENDS the test; see harness_lib
+trap 'exit 143' TERM
 
 export CHARON_LIBEXEC=$HERE/libexec
 export HOME=$T

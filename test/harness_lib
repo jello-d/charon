@@ -29,7 +29,14 @@ harness_init() {   # <name>
   esac
   _hi_c="'$T'"
   # shellcheck disable=SC2064  # expanding NOW is the point; see above
-  trap "rm -rf -- $_hi_c" EXIT INT TERM
+  trap "rm -rf -- $_hi_c" EXIT
+  # A SIGNAL MUST END THE TEST, not just clean up after it. With the delete on
+  # INT/TERM directly, a test killed by its runner's timeout deleted $T and then
+  # CARRIED ON, because a trap does not exit by itself: the next assertion read
+  # a record that had just been removed and reported a failure that never
+  # happened (freshness.t, its first run). Exiting fires the EXIT trap above.
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 }
 pass() { printf 'ok   %s%s\n' "$TEST_NAME" "${1:+ ($1)}"; }
 fail() { printf 'FAIL %s: %s\n' "$TEST_NAME" "$1" >&2; exit 1; }
