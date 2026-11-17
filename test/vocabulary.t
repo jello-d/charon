@@ -91,17 +91,20 @@ grep -q '^ignore = Name \*\.tmp$' "$lprf" \
   || fail "a bare pattern should become a Name rule"
 grep -q '^ignore = Path Archive/scratch$' "$lprf" \
   || fail "a pattern with a slash should become a Path rule"
-# 2 configured + charon's FOUR Tier 0 rules. Asserted by NAME as well as by
+# 2 configured + charon's FIVE Tier 0 rules. Asserted by NAME as well as by
 # count: a count alone cannot tell you which rule went missing, and the twin
-# pair in particular has two forms where only one is obvious.
+# pair in particular has two forms where only one is obvious. The fifth is the
+# freshness probe's file (2026-11-16), a file at the remote root that only a
+# profile syncing the whole remote could ever meet.
 for _t0 in '\.unison\.\*\.unison\.tmp' '\.charon-probe' \
+           '\.charon-fresh-\*' \
            '\*(conflict_on_????-??-??)\*' \
            '\*(conflict #\*_on_????-??-??)\*'; do
   grep -q "^ignore = Name $_t0\$" "$lprf" \
     || fail "Tier 0 ignore missing from the prf: $_t0"
 done
-grep -c '^ignore = ' "$lprf" | grep -qx 6 \
-  || fail "expected 6 ignore lines (2 configured + 4 Tier 0), got
+grep -c '^ignore = ' "$lprf" | grep -qx 7 \
+  || fail "expected 7 ignore lines (2 configured + 5 Tier 0), got
 $(grep '^ignore = ' "$lprf")"
 
 # --- Tier 2: a verbatim include, emitted only when the file exists ---

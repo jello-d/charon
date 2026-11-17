@@ -1182,6 +1182,7 @@ render_prf() {   # <profile>
           -e "s|@LABEL@|$_label|g" \
           -e "s|@CRUMB_GLOB@|$CRUMB_GLOB|g" \
           -e "s|@PROBE_DIR@|$PROBE_DIR_NAME|g" \
+          -e "s|@FRESH_GLOB@|$FRESH_GLOB|g" \
           -e "s|@TWIN_GLOB@|$TWIN_GLOB|g" \
           -e "s|@TWIN_GLOB_N@|$TWIN_GLOB_N|g" \
           -e "s|@PREFER_NOTE@|$_note|" \
@@ -3108,6 +3109,26 @@ source_subtrees() {   # <source>
 
 # Audit each rclone-backed source's remote. Reports; the verdict is the worst of
 # the sources, and a FAULT because charon cannot collapse a duplicate itself.
+# FRESHNESS for one source, the HEAL only while holding the sync lock: a
+# heal restarts the mount, and a pass running at that moment would watch its
+# source vanish under it (which the dead-source guard would then fault on).
+# A pass holding the lock is not a reason to skip the measurement, only the
+# heal, so the record still tells the truth and the next audit heals.
+# A SUBSHELL, so the lock's fd closes with it and is never held by the caller.
+audit_freshness() {   # <source>
+  (
+    mkdir -p "$LOCKDIR"
+    exec 9>"$LOCKFILE"
+    if flock -n 9 2>/dev/null; then
+      "$CHARON_LIBEXEC/charon-source" freshness "$1" --heal
+    else
+      log_warn "audit: a sync holds the lock, so a stale mount for '$1'"\
+               "would only be reported, not restarted, this time"
+      "$CHARON_LIBEXEC/charon-source" freshness "$1"
+    fi
+  )
+}
+
 do_audit() {   # [source]
   _aurc=0; _auany=
   for _aus in ${1:-$(source_names)}; do
@@ -3124,6 +3145,12 @@ do_audit() {   # [source]
     CHARON_AUDIT_SUBTREES="$(source_subtrees "$_aus")" \
       "$CHARON_LIBEXEC/charon-source" audit "$_aus" \
       || _aurc=$(worse_of "$_aurc" "$?")
+    # ONLY A STALE MOUNT IS A FINDING. The audit exits non-zero when it finds
+    # something wrong; "could not test" (2: the mount is not live, say) is not
+    # evidence of a problem, the same rule as "never audited". It is recorded,
+    # and check reports it as a WARN.
+    _auf=0; audit_freshness "$_aus" || _auf=$?
+    [ "$_auf" != 1 ] || _aurc=$(worse_of "$_aurc" 1)
   done
   [ -n "$_auany" ] \
     || log_info "audit: no rclone-backed source; nothing to audit"
@@ -3265,6 +3292,54 @@ check_audit() {
   done
   [ -n "$_caany" ] || return 0
   return "$_carc"
+}
+
+# Read what the last FRESHNESS test found (charon-source freshness, run by the
+# daily audit). Free: no remote call, no FUSE access.
+#
+# STALE AND NOT HEALED IS A FAULT: the mount does not see what other nodes
+# write, so this node is reconciling against an old remote while every pass
+# reports success. That is what manifold did for three days with every check
+# green. A fault and not drift, because no install fixes it; the remedy is a
+# restart of the mount, named in the message, which the next audit also tries.
+# HEALED IS A WARN: it was stale, a restart fixed it, and a human may want to
+# know it happened, but there is nothing to do. NEVER TESTED IS A WARN, since
+# an absent measurement is not evidence of a problem.
+check_freshness() {
+  _cfrc=0
+  for _cfs in $(source_names); do
+    [ "$("$CHARON_LIBEXEC/charon-source" provider "$_cfs" 2>/dev/null)" \
+      = rclone ] || continue
+    _cff="$CHARON_STATE/freshness/$_cfs"
+    if [ ! -f "$_cff" ]; then
+      echo "  [WARN] source '$_cfs': whether a change on the remote reaches"\
+           "its mount has never been tested (run '${APP_NAME%% *} audit')"
+      continue
+    fi
+    _cfr=$(sed -n 's/^RESULT=//p' "$_cff" | head -1)
+    _cfd=$(sed -n 's/^DELAY=//p' "$_cff" | head -1)
+    _cfx=$(sed -n 's/^DETAIL=//p' "$_cff" | head -1)
+    _cfa=$(human_age "$(sed -n 's/^CHECKED=//p' "$_cff" | head -1)" \
+           "$(date +%s)")
+    case $_cfr in
+      fresh)
+        echo "  [OK]   source '$_cfs': a change on the remote reached the"\
+             "mount in ${_cfd}s (tested $_cfa)" ;;
+      healed)
+        echo "  [WARN] source '$_cfs': the mount was STALE and was restarted;"\
+             "a change on the remote then reached it in ${_cfd}s ($_cfa)" ;;
+      stale)
+        fail_fault "source '$_cfs': its mount does NOT see changes made on"\
+          "the remote ($_cfx, $_cfa), so this node is syncing against an old"\
+          "view. Restart it: systemctl --user restart"\
+          "charon-mount@$_cfs.service"
+        _cfrc=1 ;;
+      *)
+        echo "  [WARN] source '$_cfs': freshness not tested ($_cfa):"\
+             "${_cfx:-unknown reason}" ;;
+    esac
+  done
+  return "$_cfrc"
 }
 
 # THE PLAN, with NO writes: what the next pass WOULD do.
@@ -3483,6 +3558,7 @@ do_check() {
   check_crumbs || _rc=1
   check_twins  || _rc=1
   check_audit  || _rc=$(worse_of "$_rc" "$?")
+  check_freshness || _rc=$(worse_of "$_rc" "$?")
   check_push_authorisation || _rc=$(worse_of "$_rc" "$?")
   check_notify_seam || _rc=1
   # The VERDICT, not just "did anything fail". _rc is passed only so a finding
@@ -3583,6 +3659,7 @@ copyonconflict = true
 # its own litter; sweeping it is an out-of-band job.
 ignore = Name @CRUMB_GLOB@
 ignore = Name @PROBE_DIR@
+ignore = Name @FRESH_GLOB@
 # A CONFLICT COPY IS NOT CONTENT EITHER, and this file's notes claimed it was
 # already local-only because `prefer` makes the cache the overwritten side.
 # False: a twin is local-only for ONE pass, then it is ordinary new local

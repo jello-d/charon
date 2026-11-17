@@ -41,8 +41,8 @@ PROFILES_DIR="$CHARON_CONFIG/profiles.d"
 
 usage() {
   cat <<EOF
-usage: $APP_NAME <list|show|probe|audit|status|health|seed|up|down|release>
-       [source]
+usage: $APP_NAME <list|show|probe|audit|status|health|seed|up|down|release|
+       freshness> [source]
 
   list            configured sources, plus the implicit 'default'
   provider <name> print which provider backs it
@@ -56,6 +56,10 @@ usage: $APP_NAME <list|show|probe|audit|status|health|seed|up|down|release>
   down <name>     take it down
   release <name>  abort a mount whose daemon will not answer, so nothing is
                   left waiting on it; its unit brings it back (rclone only)
+  freshness <name> [--heal]
+                  does a change made ON THE REMOTE reach the mount? Writes a
+                  tiny file at the remote root and watches for it (writes!);
+                  --heal restarts a stale mount and tests again
 EOF
 }
 
@@ -642,6 +646,128 @@ do_updown() {   # <up|down> <source>
   esac
 }
 
+# FRESHNESS: does a change made ON THE REMOTE actually reach this mount?
+#
+# THE GAP, measured on manifold 2026-11-16. Three files sat on Drive for up to
+# three days while 166 media passes on manifold never pulled them: its mount,
+# up since Nov 6 through two suspends, was serving a listing that did not
+# include them, rclone logged nothing, and every check stayed green, because
+# nothing anywhere asked whether a REMOTE change ever reaches the mount. The
+# cost surfaced only when a seed copied the true state into the cache and a
+# pass tried to upload the "new" files over files that already existed.
+#
+# THE ONLY VALID SHAPE, learned by getting it wrong twice the same evening:
+#   1. list a directory THROUGH THE MOUNT first, so the mount has it CACHED. A
+#      directory the mount has never listed is fetched fresh, so a file shows
+#      up at once and the test measures nothing about change detection.
+#   2. create a file with a SEPARATE rclone process, straight at the remote.
+#   3. watch for it through the mount, bounded.
+# AND NEVER CREATE A FOLDER: two nodes creating one at once leave TWO on Drive,
+# which made a box read as stale when it was looking at the other copy. So the
+# file goes in the remote's ROOT, which always exists, named per host and per
+# run, and is deleted afterwards (not to the trash: one a day would pile up).
+# FRESH_GLOB makes every sync and seed ignore it.
+#
+# IT WRITES TO THE REMOTE, so it is never run per pass; the daily audit runs it.
+fresh_file() { printf '%s/freshness/%s' "$CHARON_STATE" "$1"; }
+
+# One measurement. 0 fresh, 1 stale, 2 could not test. Sets FM_DELAY (seconds
+# until the change showed, or the bound) and FM_DETAIL.
+freshness_measure() {   # <mount> <remote>
+  FM_DELAY=; FM_DETAIL=
+  if [ "$(endpoint_state "$1")" != live ]; then
+    FM_DETAIL="the mount at $1 is not live"; return 2
+  fi
+  _fmh=$(uname -n 2>/dev/null | tr -c 'A-Za-z0-9.\n-' '_')
+  # A run killed before its cleanup leaves its file behind; clear THIS node's
+  # own leftovers first (never another node's: it may be mid-measurement).
+  "$RCLONE_BIN" lsf --files-only --max-depth 1 "$2:" 2>/dev/null \
+    | grep -E "^\.charon-fresh-${_fmh:-node}-[0-9]+\$" \
+    | while IFS= read -r _fml; do
+        "$RCLONE_BIN" deletefile "$2:$_fml" --drive-use-trash=false \
+          >/dev/null 2>&1 || :
+      done
+  # PRIME: list the root through the mount so it is cached (step 1).
+  mount_lists "$1" .charon-prime-never-there 100
+  [ $? -ne 2 ] || { FM_DETAIL="the mount root did not list"; return 2; }
+  sleep 1
+  _fmn=.charon-fresh-${_fmh:-node}-$(date +%s)
+  "$RCLONE_BIN" touch "$2:$_fmn" >/dev/null 2>&1 \
+    || { FM_DETAIL="could not create a file on the remote"; return 2; }
+  _fmb=${CHARON_FRESH_BOUND:-90}
+  _fm0=$(date +%s); _fms=
+  while [ $(( $(date +%s) - _fm0 )) -lt "$_fmb" ]; do
+    mount_lists "$1" "$_fmn" 50 && { _fms=$(( $(date +%s) - _fm0 )); break; }
+    sleep 1
+  done
+  _fmd=0
+  until "$RCLONE_BIN" deletefile "$2:$_fmn" --drive-use-trash=false \
+          >/dev/null 2>&1; do
+    _fmd=$((_fmd + 1)); [ "$_fmd" -lt 3 ] || {
+      log_warn "could not delete the freshness file $2:$_fmn; the next run"\
+               "clears it"; break; }
+    sleep 2
+  done
+  if [ -n "$_fms" ]; then FM_DELAY=$_fms; return 0; fi
+  FM_DELAY=$_fmb
+  FM_DETAIL="a file created on the remote was still not visible through the"
+  FM_DETAIL="$FM_DETAIL mount after ${_fmb}s"
+  return 1
+}
+
+# Measure, and with --heal restart charon's own mount when it is stale and
+# measure again. Writes the record `charon check` reads. 0 fresh (or healed),
+# 1 stale, 2 could not test.
+#
+# --heal RESTARTS THE MOUNT, which the caller must only ask for while no sync
+# pass can be running (charon-sync's audit holds the sync lock for it). The
+# cost is the mount's restart, a few seconds; the alternative is a mount that
+# silently stops seeing the remote for days.
+do_freshness() {   # <source> [--heal]
+  [ "$(source_provider "$1")" = rclone ] || {
+    log_info "source '$1' is not rclone-backed; freshness is a question about"\
+             "a mount charon runs"
+    return 0; }
+  _fsm=$(source_get "$1" MOUNT); _fsr=$(source_get "$1" REMOTE)
+  [ -n "$_fsm" ] && [ -n "$_fsr" ] || {
+    log_error "source '$1' needs both MOUNT and REMOTE"; return 2; }
+  freshness_measure "$_fsm" "$_fsr"; _fsv=$?
+  _fsres=fresh
+  case $_fsv in 1) _fsres=stale ;; 2) _fsres=untestable ;; esac
+  if [ "$_fsv" = 1 ] && [ "${2:-}" = --heal ]; then
+    log_warn "source '$1': a change made on the remote did not reach the"\
+             "mount in ${FM_DELAY}s; restarting the mount"
+    if systemctl --user restart "charon-mount@$1.service" 2>/dev/null; then
+      _fsw=0
+      until [ "$(endpoint_state "$_fsm")" = live ]; do
+        sleep 1; _fsw=$((_fsw + 1)); [ "$_fsw" -lt 60 ] || break
+      done
+      freshness_measure "$_fsm" "$_fsr"; _fsv=$?
+      case $_fsv in
+        0) _fsres=healed ;;
+        *) _fsres=stale
+           FM_DETAIL="still stale after a restart: $FM_DETAIL" ;;
+      esac
+    else
+      FM_DETAIL="$FM_DETAIL; the restart was refused"
+    fi
+  fi
+  _fsf=$(fresh_file "$1")
+  mkdir -p "${_fsf%/*}" || return 2
+  printf 'CHECKED=%s\nRESULT=%s\nDELAY=%s\nDETAIL=%s\n' "$(date +%s)" \
+    "$_fsres" "${FM_DELAY:-}" "${FM_DETAIL:-}" >"$_fsf.tmp" \
+    && mv -f "$_fsf.tmp" "$_fsf"
+  case $_fsres in
+    fresh)  log_info "source '$1': a remote change reached the mount in"\
+                     "${FM_DELAY}s" ;;
+    healed) log_warn "source '$1': the mount was STALE and was restarted; a"\
+                     "remote change now reaches it in ${FM_DELAY}s" ;;
+    stale)  log_error "source '$1': $FM_DETAIL" ;;
+    *)      log_warn "source '$1': freshness not tested: $FM_DETAIL" ;;
+  esac
+  case $_fsv in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
 # RELEASE: a request on this source's mount has been TAKEN by its daemon and
 # will not be answered, and something must stop waiting on it NOW. The case is
 # a suspend: on 2026-11-16 the network went 2ms after logind announced a sleep,
@@ -780,6 +906,7 @@ case "${1:-}" in
   probe) _need "${2:-}"; _known "$2"; do_probe "$2" ;;
   audit) _need "${2:-}"; _known "$2"; do_audit "$2" ;;
   release) _need "${2:-}"; _known "$2"; do_release "$2" ;;
+  freshness) _need "${2:-}"; _known "$2"; do_freshness "$2" "${3:-}" ;;
   # up/down take NO _known gate, on purpose: see the comment on _known.
   up)    _need "${2:-}"; do_updown up "$2" ;;
   down)  _need "${2:-}"; do_updown down "$2" ;;

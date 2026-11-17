@@ -119,6 +119,13 @@ source_get() {   # <source> <KEY>
 # an ignore the litter becomes live data.
 CRUMB_GLOB='.unison.*.unison.tmp'   # unison's transfer temps (a FILE glob)
 PROBE_DIR_NAME=.charon-probe        # the trait probe's scratch (a DIRECTORY)
+# The freshness probe's file (charon-source freshness). A FILE at the remote's
+# ROOT rather than anything in a folder, because the root always exists and
+# creating a folder from two nodes at once leaves TWO on Drive (measured
+# 2026-11-16, by a test of mine). Never content, so every consumer above
+# ignores it like the others, which matters only for a profile that syncs the
+# whole remote: every other profile's subtree never contains the root.
+FRESH_GLOB='.charon-fresh-*'
 
 # unison's CONFLICT COPIES, from copyonconflict. A third class, added
 # 2026-10-04, and the reason is that this file's own design notes asserted
@@ -171,7 +178,8 @@ TWIN_GLOB_N='*(conflict #*_on_????-??-??)*'
 #     pulled DOWN into a cache that is now ignoring it.
 never_content_excludes() {
   printf '%s\n' "--exclude" "$CRUMB_GLOB" "--exclude" "$PROBE_DIR_NAME/**" \
-                "--exclude" "$TWIN_GLOB"  "--exclude" "$TWIN_GLOB_N"
+                "--exclude" "$TWIN_GLOB"  "--exclude" "$TWIN_GLOB_N" \
+                "--exclude" "$FRESH_GLOB"
 }
 
 # --- WHAT IS ACTUALLY AT A MOUNTPOINT, asked without hanging on it ----------
@@ -223,7 +231,9 @@ endpoint_state() {   # <path> [deadline, tenths of a second]
   [ -n "$(mount_device "$1")" ] || { echo none; return 0; }
   _eso=$(mktemp "${TMPDIR:-/tmp}/charon-probe.XXXXXX") \
     || { echo stuck; return 0; }
-  stat -f -c %T -- "$1" >"$_eso" 2>&1 </dev/null &
+  # 9>&-: an ABANDONED probe must not keep charon's sync lock (fd 9) held for
+  # however long the mount takes to answer, which could be forever.
+  stat -f -c %T -- "$1" >"$_eso" 2>&1 </dev/null 9>&- &
   _esp=$!
   _esn=0
   while kill -0 "$_esp" 2>/dev/null; do
@@ -235,6 +245,23 @@ endpoint_state() {   # <path> [deadline, tenths of a second]
   if grep -q 'not connected' "$_eso" 2>/dev/null; then echo dead
   else echo live; fi
   rm -f "$_eso"
+}
+
+# Does <dir>, listed THROUGH THE MOUNT, contain an entry named exactly <name>?
+#   0 yes, 1 no, 2 the listing did not answer within the deadline.
+# Same rule as endpoint_state: a listing of a stuck mount can never be killed,
+# so it runs in the background and is abandoned, never waited for.
+mount_lists() {   # <dir> <name> [deadline, tenths of a second]
+  _mlo=$(mktemp "${TMPDIR:-/tmp}/charon-list.XXXXXX") || return 2
+  ls -A -- "$1" >"$_mlo" 2>/dev/null </dev/null 9>&- &
+  _mlp=$!
+  _mln=0
+  while kill -0 "$_mlp" 2>/dev/null; do
+    if [ "$_mln" -ge "${3:-100}" ]; then rm -f "$_mlo"; return 2; fi
+    sleep 0.1; _mln=$((_mln + 1))
+  done
+  if grep -qxF -- "$2" "$_mlo"; then rm -f "$_mlo"; return 0; fi
+  rm -f "$_mlo"; return 1
 }
 
 # A CHECK VERDICT SAYS WHETHER AN APPLY WOULD HELP, which is a different
